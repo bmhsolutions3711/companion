@@ -613,6 +613,13 @@ function escapeHtml(text) {
 // ── Send Message ────────────────────────────────────────────
 async function sendMessage(text) {
     if (!text.trim() || isProcessing) return;
+    // Defense-in-depth: never call /api/chat in dictate mode. Anything that
+    // tries to (e.g. legacy code paths, race conditions) routes to save instead.
+    if (currentMode === "dictate") {
+        console.warn("[dictate] sendMessage suppressed; redirecting to saveDictation");
+        if (text.trim()) saveDictation(text.trim());
+        return;
+    }
 
     isProcessing = true;
     addMessage("user", text);
@@ -788,7 +795,16 @@ function initSpeechRecognition() {
             return;
         }
 
-        // If there's unsent transcript when recognition ends, send it
+        // ── Dictate mode: NEVER auto-send to model. Just restart recognition
+        // so the mic stays "open" until the user taps to stop+save. ──
+        if (currentMode === "dictate") {
+            if (isRecording && !isProcessing) {
+                try { recognition.start(); } catch(e) {}
+            }
+            return;
+        }
+
+        // If there's unsent transcript when recognition ends, send it (chat modes only)
         if (fullTranscript.trim() && isRecording) {
             if (silenceTimer) clearTimeout(silenceTimer);
             const pending = fullTranscript.trim();
