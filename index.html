@@ -1028,6 +1028,16 @@ selectedVoice = pickBestVoice();
 
 // ── Session Management ──────────────────────────────────────
 async function saveSession() {
+    // Dictate mode: route to saveDictation (chat session save endpoint
+    // doesn't know about dictation transcripts).
+    if (currentMode === "dictate") {
+        const text = (dictateAccumulator || fullTranscript || "").trim();
+        if (!text) { addSystemMessage("Nothing dictated yet — tap mic and speak first"); return; }
+        // If still recording, stop first so the in-flight transcript is finalized
+        if (isRecording) stopRecording();
+        else saveDictation(text);
+        return;
+    }
     try {
         const resp = await apiCall("/api/save", {
             method: "POST",
