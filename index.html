@@ -722,7 +722,13 @@ function initSpeechRecognition() {
     recognition.onstart = () => {
         isRecording = true;
         manualStop = false;
-        fullTranscript = "";
+        // Don't wipe fullTranscript on auto-restart in dictate mode — the
+        // browser auto-stops on each pause and we restart it from onend, but
+        // the user's accumulated transcript needs to persist across pauses.
+        // startRecording() handles the legitimate fresh-start reset for both modes.
+        if (currentMode !== "dictate") {
+            fullTranscript = "";
+        }
         document.getElementById("micBtn").classList.add("recording");
         setStatus("Listening...");
     };

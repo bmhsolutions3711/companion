@@ -1,5 +1,5 @@
 // Voice Companion PWA shell — network-first SW. Backend API calls bypass cache.
-const CACHE_NAME = "comp-shell-v5";
+const CACHE_NAME = "comp-shell-v6";
 const SHELL = [
   "./",
   "./index.html",
