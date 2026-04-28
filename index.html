@@ -856,6 +856,16 @@ function startRecording() {
     window.speechSynthesis.cancel();
     isSpeaking = false;
 
+    // Dictate mode: each new recording is a fresh dictation. Clear the
+    // chat area of prior dictation messages so we don't accumulate a list.
+    if (currentMode === "dictate") {
+        document.getElementById("chatArea").innerHTML =
+            '<div class="message system">🎤 Dictating — speak, pause, tap mic again to save.</div>';
+        dictateAccumulator = "";
+        dictateMessageEl = null;
+        fullTranscript = "";
+    }
+
     try {
         recognition.start();
     } catch (e) {
