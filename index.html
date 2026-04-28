@@ -1,0 +1,1294 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="bmh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>BIK — Voice Companion</title>
+    <meta name="theme-color" content="#0f0f0f">
+    <link rel="manifest" href="./manifest.json">
+    <link rel="icon" type="image/png" sizes="32x32" href="./static/companion-icon-32.png">
+    <link rel="apple-touch-icon" href="./static/companion-icon-180.png">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Companion">
+    <!-- Shared BMH design system — tokens activated via html[data-theme=bmh].
+         Loaded before inline styles so existing Companion rules win collisions. -->
+    <link rel="stylesheet" href="./design/bmh-design.css?v=1">
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        [hidden] { display: none !important; }
+        /* Setup overlay */
+        .setup-overlay {
+            position: fixed; inset: 0; z-index: 9999;
+            background: #0f0f0f;
+            display: flex; align-items: center; justify-content: center;
+            padding: 20px;
+        }
+        .setup-card {
+            width: 100%; max-width: 420px;
+            background: #1a1a1a; border: 1px solid rgba(229, 181, 36, 0.3);
+            border-radius: 14px; padding: 28px 24px;
+        }
+        .setup-card h1 {
+            color: #e5b524; font-size: 22px; font-weight: 700;
+            letter-spacing: 0.3px; margin-bottom: 8px;
+        }
+        .setup-lead { font-size: 13px; color: #9ca3af; line-height: 1.5; margin-bottom: 22px; }
+        .setup-lead code { background: #0f0f0f; border-radius: 4px; padding: 1px 6px; font-size: 11.5px; font-family: ui-monospace, monospace; color: #e5b524; }
+        .setup-card label { display: block; margin-bottom: 14px; }
+        .setup-card label span { display: block; font-size: 10.5px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; color: #9ca3af; margin-bottom: 6px; }
+        .setup-card input { width: 100%; background: #0f0f0f; border: 1px solid #333; border-radius: 8px; padding: 11px 13px; font-size: 14px; color: #e5e7eb; font-family: inherit; }
+        .setup-card input:focus { outline: none; border-color: #e5b524; }
+        .setup-btn { width: 100%; background: #e5b524; color: #0f0f0f; border: none; border-radius: 999px; padding: 12px; font-size: 14px; font-weight: 700; cursor: pointer; margin-top: 6px; }
+        .setup-btn:disabled { opacity: 0.5; cursor: wait; }
+        .setup-error { font-size: 12px; color: #ef4444; margin-top: 10px; }
+        .setup-hint { font-size: 11px; color: #6b7280; text-align: center; margin-top: 14px; }
+        body {
+            background: #0f0f0f;
+            color: #e5e7eb;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* Header */
+        .header {
+            text-align: center;
+            padding: 16px;
+            border-bottom: 1px solid rgba(229, 181, 36, 0.3);
+        }
+        .header h1 {
+            color: #e5b524;
+            font-size: 18px;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+        }
+        .header .sub { color: #6b7280; font-size: 11px; margin-top: 2px; }
+
+        /* Model Selector */
+        .model-bar {
+            display: flex;
+            justify-content: center;
+            gap: 8px;
+            padding: 12px;
+            background: #1a1a1a;
+        }
+        .model-btn {
+            padding: 8px 16px;
+            border-radius: 20px;
+            border: 1px solid #333;
+            background: transparent;
+            color: #9ca3af;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .model-btn:hover { border-color: #e5b524; color: #e5b524; }
+        .model-btn.active {
+            background: rgba(229, 181, 36, 0.15);
+            border-color: #e5b524;
+            color: #e5b524;
+            font-weight: 600;
+        }
+        .model-info {
+            text-align: center;
+            font-size: 11px;
+            color: #6b7280;
+            padding: 4px;
+        }
+
+        /* Mode Selector */
+        .mode-bar {
+            display: flex;
+            justify-content: center;
+            gap: 6px;
+            padding: 8px 12px 4px;
+            background: #1a1a1a;
+        }
+        .mode-btn {
+            padding: 5px 14px;
+            border-radius: 16px;
+            border: 1px solid #333;
+            background: transparent;
+            color: #6b7280;
+            font-size: 11px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .mode-btn:hover { border-color: #e5b524; color: #e5b524; }
+        .mode-btn.active {
+            background: rgba(229, 181, 36, 0.15);
+            border-color: #e5b524;
+            color: #e5b524;
+            font-weight: 600;
+        }
+
+        /* Chat Area */
+        .chat-area {
+            flex: 1;
+            overflow-y: auto;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            max-height: calc(100vh - 280px);
+        }
+        .message {
+            max-width: 85%;
+            padding: 12px 16px;
+            border-radius: 16px;
+            font-size: 14px;
+            line-height: 1.5;
+            animation: fadeIn 0.3s ease;
+        }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+        .message.user {
+            align-self: flex-end;
+            background: #1e3a5f;
+            border-bottom-right-radius: 4px;
+        }
+        .message.assistant {
+            align-self: flex-start;
+            background: #2a2a2a;
+            border-bottom-left-radius: 4px;
+        }
+        .message.system {
+            align-self: center;
+            background: transparent;
+            color: #6b7280;
+            font-size: 12px;
+            font-style: italic;
+        }
+        .message .speaker {
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: #e5b524;
+            margin-bottom: 4px;
+        }
+        .thinking {
+            align-self: flex-start;
+            color: #6b7280;
+            font-size: 13px;
+            padding: 8px 16px;
+        }
+        .thinking .dots span {
+            animation: blink 1.4s infinite;
+            font-size: 20px;
+        }
+        .thinking .dots span:nth-child(2) { animation-delay: 0.2s; }
+        .thinking .dots span:nth-child(3) { animation-delay: 0.4s; }
+        @keyframes blink { 0%, 80%, 100% { opacity: 0.2; } 40% { opacity: 1; } }
+
+        /* Voice Controls */
+        .controls {
+            padding: 16px;
+            background: #1a1a1a;
+            border-top: 1px solid rgba(229, 181, 36, 0.2);
+        }
+        .voice-row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            justify-content: center;
+        }
+        .mic-btn {
+            width: 64px;
+            height: 64px;
+            border-radius: 50%;
+            border: 3px solid #333;
+            background: #1a1a1a;
+            color: #e5e7eb;
+            font-size: 28px;
+            cursor: pointer;
+            transition: all 0.3s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .mic-btn:hover { border-color: #e5b524; transform: scale(1.05); }
+        .mic-btn.recording {
+            border-color: #ef4444;
+            background: rgba(239, 68, 68, 0.15);
+        }
+
+        .mic-btn.disabled { opacity: 0.4; cursor: not-allowed; }
+
+        .mute-btn {
+            width: 48px;
+            height: 48px;
+            border-radius: 50%;
+            border: 2px solid #333;
+            background: transparent;
+            color: #9ca3af;
+            font-size: 20px;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .mute-btn:hover { border-color: #e5b524; color: #e5b524; }
+        .mute-btn.muted {
+            border-color: #ef4444;
+            background: rgba(239, 68, 68, 0.15);
+            color: #ef4444;
+        }
+
+        .action-btn {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            border: 1px solid #333;
+            background: transparent;
+            color: #9ca3af;
+            font-size: 16px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .action-btn:hover { border-color: #e5b524; color: #e5b524; }
+        .action-btn.starred { border-color: #e5b524; color: #e5b524; background: rgba(229, 181, 36, 0.15); }
+
+        /* Training Modal */
+        .training-overlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.85);
+            z-index: 1000;
+            overflow-y: auto;
+        }
+        .training-overlay.active { display: flex; flex-direction: column; }
+        .training-header {
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 16px 20px;
+            border-bottom: 1px solid rgba(229,181,36,0.3);
+            background: #1a1a1a;
+            position: sticky; top: 0; z-index: 1;
+        }
+        .training-header h2 { color: #e5b524; font-size: 16px; }
+        .training-close { background: none; border: none; color: #9ca3af; font-size: 24px; cursor: pointer; }
+        .training-stats {
+            display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
+            padding: 12px 20px; background: #1a1a1a;
+        }
+        .stat-box {
+            text-align: center; padding: 8px; border-radius: 8px;
+            background: #252525; border: 1px solid #333;
+        }
+        .stat-box .val { color: #e5b524; font-size: 20px; font-weight: 700; }
+        .stat-box .lbl { color: #6b7280; font-size: 10px; margin-top: 2px; }
+        .training-actions {
+            display: flex; gap: 8px; padding: 12px 20px; background: #1a1a1a;
+            border-bottom: 1px solid #333;
+        }
+        .train-btn {
+            padding: 8px 16px; border-radius: 8px; border: 1px solid #333;
+            background: transparent; color: #e5e7eb; font-size: 12px; cursor: pointer;
+        }
+        .train-btn:hover { border-color: #e5b524; color: #e5b524; }
+        .train-btn.primary { background: #e5b524; color: #0f0f0f; border-color: #e5b524; font-weight: 600; }
+        .pair-list { padding: 12px 20px; flex: 1; }
+        .pair-card {
+            background: #1a1a1a; border: 1px solid #333; border-radius: 8px;
+            padding: 12px; margin-bottom: 8px;
+        }
+        .pair-card .pair-meta { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+        .pair-card .pair-meta .session-id { color: #6b7280; font-size: 10px; }
+        .pair-card .pair-user { color: #3b82f6; font-size: 12px; margin-bottom: 4px; }
+        .pair-card .pair-asst { color: #10b981; font-size: 12px; }
+        .pair-card .pair-user::before { content: 'Bryan: '; font-weight: 600; }
+        .pair-card .pair-asst::before { content: 'AI: '; font-weight: 600; }
+        .star-rating { display: flex; gap: 2px; }
+        .star-rating button {
+            background: none; border: none; font-size: 16px; cursor: pointer;
+            color: #333; transition: color 0.15s;
+        }
+        .star-rating button.active { color: #e5b524; }
+        .star-rating button:hover { color: #e5b524; }
+        .tag-pills { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 6px; }
+        .tag-pill {
+            padding: 2px 8px; border-radius: 10px; font-size: 10px;
+            border: 1px solid #444; color: #9ca3af; cursor: pointer; background: transparent;
+        }
+        .tag-pill.active { border-color: #e5b524; color: #e5b524; background: rgba(229,181,36,0.1); }
+
+        .status-text {
+            text-align: center;
+            font-size: 11px;
+            color: #6b7280;
+            margin-top: 8px;
+            min-height: 16px;
+        }
+
+        /* Text Input Fallback */
+        .text-row {
+            display: flex;
+            gap: 8px;
+            margin-top: 8px;
+        }
+        .text-input {
+            flex: 1;
+            padding: 10px 14px;
+            border-radius: 24px;
+            border: 1px solid #333;
+            background: #0f0f0f;
+            color: #e5e7eb;
+            font-size: 14px;
+            outline: none;
+        }
+        .text-input:focus { border-color: #e5b524; }
+        .send-btn {
+            padding: 10px 20px;
+            border-radius: 24px;
+            border: none;
+            background: #e5b524;
+            color: #0f0f0f;
+            font-weight: 700;
+            font-size: 14px;
+            cursor: pointer;
+        }
+        .send-btn:hover { background: #d4a520; }
+        .send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+        /* Settings */
+        .settings-row {
+            display: flex;
+            justify-content: center;
+            gap: 16px;
+            margin-top: 8px;
+        }
+        .toggle-label {
+            font-size: 11px;
+            color: #6b7280;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            cursor: pointer;
+        }
+        .toggle-label input { accent-color: #e5b524; }
+
+        /* Mobile */
+        @media (max-width: 600px) {
+            .header h1 { font-size: 16px; }
+            .message { max-width: 92%; font-size: 13px; }
+            .mic-btn { width: 56px; height: 56px; font-size: 24px; }
+        }
+    </style>
+</head>
+<body>
+
+<!-- First-run setup overlay -->
+<section id="setup" class="setup-overlay" hidden>
+  <div class="setup-card">
+    <h1>Connect Companion</h1>
+    <p class="setup-lead">One-time setup. Enter your Mac's tailnet URL and the auth token from <code>~/.config/bmh/.env</code> (<code>COMPANION_TOKEN</code>).</p>
+    <label>
+      <span>Backend URL</span>
+      <input id="setup-url" type="text" autocomplete="off" autocorrect="off" autocapitalize="off"
+             placeholder="https://bryans-macbook-pro-1.tail1ed408.ts.net:8430"
+             value="https://bryans-macbook-pro-1.tail1ed408.ts.net:8430">
+    </label>
+    <label>
+      <span>Auth token</span>
+      <input id="setup-token" type="password" autocomplete="off" autocorrect="off" autocapitalize="off"
+             placeholder="64-char hex from COMPANION_TOKEN">
+    </label>
+    <button id="setup-go" class="setup-btn">Connect</button>
+    <p id="setup-error" class="setup-error" hidden></p>
+    <p class="setup-hint">Stored only in this device's localStorage. Tap ⚙ in the toolbar to re-enter.</p>
+  </div>
+</section>
+
+<div class="header">
+    <h1>Voice Companion</h1>
+    <div class="sub">BIK — Blacktop Intelligence Krew</div>
+</div>
+
+<div class="model-bar" id="modelBar"></div>
+<div class="mode-bar">
+    <button class="mode-btn active" data-mode="companion" onclick="selectMode('companion')">🧠 Companion</button>
+    <button class="mode-btn" data-mode="brain-dump" onclick="selectMode('brain-dump')">💨 Brain Dump</button>
+</div>
+<div class="model-info" id="modelInfo"></div>
+
+<div class="chat-area" id="chatArea">
+    <div class="message system">Tap the mic or type below. I'm here.</div>
+</div>
+
+<div class="controls">
+    <div class="voice-row">
+        <button class="action-btn" onclick="saveSession()" title="Save journal">📓</button>
+        <button class="mute-btn" id="muteBtn" onclick="toggleMute()" title="Mute/Unmute">🔇</button>
+        <button class="mic-btn" id="micBtn" onclick="toggleMic()">🎙️</button>
+        <button class="action-btn" onclick="resetSession()" title="New session">🔄</button>
+        <button class="action-btn" onclick="showSessions()" title="Past sessions">📋</button>
+        <button class="action-btn" id="starBtn" onclick="starSession()" title="Star as training example">☆</button>
+        <button class="action-btn" onclick="showTraining()" title="Training data">🧠</button>
+        <button class="action-btn" onclick="resetCreds()" title="Re-enter backend URL + token">⚙</button>
+    </div>
+    <div class="status-text" id="status">Ready</div>
+    <div class="text-row">
+        <input class="text-input" id="textInput" type="text" placeholder="Or type here..." autocomplete="off">
+        <button class="send-btn" id="sendBtn" onclick="sendText()">Send</button>
+    </div>
+    <div class="settings-row">
+        <label class="toggle-label">
+            <input type="checkbox" id="autoSpeak" checked> Auto-speak responses
+        </label>
+        <label class="toggle-label">
+            <input type="checkbox" id="autoListen"> Auto-listen after response
+        </label>
+    </div>
+</div>
+
+<!-- Training Data Modal -->
+<div class="training-overlay" id="trainingOverlay">
+    <div class="training-header">
+        <h2>Training Data</h2>
+        <button class="training-close" onclick="hideTraining()">&times;</button>
+    </div>
+    <div class="training-stats" id="trainingStats">
+        <div class="stat-box"><div class="val" id="statTotal">-</div><div class="lbl">Total Pairs</div></div>
+        <div class="stat-box"><div class="val" id="statRated">-</div><div class="lbl">Rated</div></div>
+        <div class="stat-box"><div class="val" id="statStarred">-</div><div class="lbl">Starred</div></div>
+    </div>
+    <div class="training-actions">
+        <button class="train-btn primary" onclick="exportTraining()">Export to Pipeline</button>
+        <button class="train-btn" onclick="loadTrainingPairs()">Refresh</button>
+    </div>
+    <div class="pair-list" id="pairList"></div>
+</div>
+
+<script>
+// ── Config (cross-origin: shell on github.io, backend on Mac via Tailscale) ──
+const LS_BACKEND = "comp_backend_url";
+const LS_TOKEN = "comp_token";
+function getBackend() { return (localStorage.getItem(LS_BACKEND) || "").replace(/\/$/, ""); }
+function getToken() { return localStorage.getItem(LS_TOKEN) || ""; }
+
+// Wrapper: prepends backend URL, attaches Bearer auth, surfaces auth failures.
+async function apiCall(path, init) {
+    init = init || {};
+    const headers = Object.assign({}, init.headers || {}, { "Authorization": "Bearer " + getToken() });
+    if (!getBackend() || !getToken()) {
+        showSetup("Backend or token not configured.");
+        throw new Error("not-configured");
+    }
+    const resp = await fetch(getBackend() + path, Object.assign({}, init, { headers }));
+    if (resp.status === 401 || resp.status === 403) {
+        showSetup("Auth failed — token rejected. Re-enter below.");
+        throw new Error("auth-failed");
+    }
+    return resp;
+}
+
+let currentModel = null;
+let currentMode = "companion";
+let sessionId = "s_" + Date.now();
+let isRecording = false;
+let isProcessing = false;
+let isMuted = false;
+let recognition = null;
+let manualStop = false;
+let silenceTimer = null;
+let fullTranscript = "";
+
+// Dictate mode state
+let dictateAccumulator = "";  // growing transcript shown in chat area while dictating
+let dictateMessageEl = null;  // DOM node we keep updating
+
+// ── Model Selector ──────────────────────────────────────────
+async function loadModels() {
+    try {
+        const resp = await apiCall("/api/models");
+        const data = await resp.json();
+        const bar = document.getElementById("modelBar");
+
+        // Auto-select server default if no model chosen
+        if (!currentModel) currentModel = data.default || Object.keys(data.models)[0];
+
+        bar.innerHTML = Object.entries(data.models).map(([id, m]) => `
+            <button class="model-btn ${id === currentModel ? 'active' : ''}"
+                    onclick="selectModel('${id}')"
+                    data-model="${id}">
+                ${escapeHtml(m.name)}
+            </button>
+        `).join("");
+
+        updateModelInfo();
+    } catch (e) {
+        console.error("Failed to load models:", e);
+    }
+}
+
+function selectModel(modelId) {
+    currentModel = modelId;
+    document.querySelectorAll(".model-btn").forEach(b => {
+        b.classList.toggle("active", b.dataset.model === modelId);
+    });
+    updateModelInfo();
+    addSystemMessage(`Switched to ${modelId}`);
+}
+
+function updateModelInfo() {
+    const info = document.getElementById("modelInfo");
+    if (currentMode === "dictate") { info.textContent = "Dictate · saves transcript only"; return; }
+    const btn = document.querySelector(`.model-btn[data-model="${currentModel}"]`);
+    const modeLabel = currentMode === "brain-dump" ? " · Brain Dump" : "";
+    info.textContent = btn ? `Active model: ${currentModel}${modeLabel}` : "";
+}
+
+function selectMode(mode) {
+    currentMode = mode;
+    document.querySelectorAll(".mode-btn").forEach(b => {
+        b.classList.toggle("active", b.dataset.mode === mode);
+    });
+    // Hide model selector + auto-listen toggle in dictate mode (no model = no response)
+    const modelBar = document.getElementById("modelBar");
+    const settingsRow = document.querySelector(".settings-row");
+    if (mode === "dictate") {
+        if (modelBar) modelBar.style.display = "none";
+        if (settingsRow) settingsRow.style.display = "none";
+    } else {
+        if (modelBar) modelBar.style.display = "";
+        if (settingsRow) settingsRow.style.display = "";
+    }
+    // Reset dictate state on mode change
+    dictateAccumulator = "";
+    dictateMessageEl = null;
+    updateModelInfo();
+    const label = mode === "brain-dump" ? "Brain Dump mode — just talk"
+                : mode === "dictate"    ? "Dictate mode — talking is just saved, no model response. Tap mic to start, tap again to save."
+                : "Companion mode";
+    addSystemMessage(label);
+}
+
+// ── Chat ────────────────────────────────────────────────────
+function addMessage(role, text) {
+    const area = document.getElementById("chatArea");
+    const div = document.createElement("div");
+    div.className = `message ${role}`;
+
+    const speaker = role === "user" ? "Bryan" : "Companion";
+    div.innerHTML = `<div class="speaker">${speaker}</div>${escapeHtml(text)}`;
+
+    area.appendChild(div);
+    area.scrollTop = area.scrollHeight;
+}
+
+function addSystemMessage(text) {
+    const area = document.getElementById("chatArea");
+    const div = document.createElement("div");
+    div.className = "message system";
+    div.textContent = text;
+    area.appendChild(div);
+    area.scrollTop = area.scrollHeight;
+}
+
+function showThinking() {
+    const area = document.getElementById("chatArea");
+    const div = document.createElement("div");
+    div.className = "thinking";
+    div.id = "thinking";
+    div.innerHTML = '<span class="dots"><span>.</span><span>.</span><span>.</span></span> Thinking';
+    area.appendChild(div);
+    area.scrollTop = area.scrollHeight;
+}
+
+function hideThinking() {
+    const el = document.getElementById("thinking");
+    if (el) el.remove();
+}
+
+function escapeHtml(text) {
+    const div = document.createElement("div");
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+// ── Send Message ────────────────────────────────────────────
+async function sendMessage(text) {
+    if (!text.trim() || isProcessing) return;
+
+    isProcessing = true;
+    addMessage("user", text);
+    showThinking();
+    setStatus("Thinking...");
+    document.getElementById("sendBtn").disabled = true;
+
+    try {
+        const resp = await apiCall("/api/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                message: text,
+                model: currentModel,
+                session: sessionId,
+                mode: currentMode,
+            }),
+        });
+
+        const data = await resp.json();
+        hideThinking();
+
+        if (data.error) {
+            addSystemMessage("Error: " + data.error);
+            setStatus("Error — try again");
+        } else {
+            addMessage("assistant", data.response);
+            setStatus(`${data.model} — ${data.messages} messages`);
+
+            // Auto-speak, then auto-listen AFTER speech finishes
+            if (document.getElementById("autoSpeak").checked) {
+                speak(data.response, () => {
+                    // This callback fires when TTS finishes speaking
+                    if (document.getElementById("autoListen").checked) {
+                        setStatus("Your turn...");
+                        setTimeout(() => {
+                            if (!isRecording && !isProcessing) startRecording();
+                        }, 800); // Small buffer after voice stops
+                    }
+                });
+            } else if (document.getElementById("autoListen").checked) {
+                // No TTS — just open mic after a beat
+                setTimeout(() => {
+                    if (!isRecording && !isProcessing) startRecording();
+                }, 500);
+            }
+        }
+    } catch (e) {
+        hideThinking();
+        addSystemMessage("Connection error. Is the server running?");
+        setStatus("Error");
+    }
+
+    isProcessing = false;
+    document.getElementById("sendBtn").disabled = false;
+}
+
+// ── Text Input ──────────────────────────────────────────────
+function sendText() {
+    const input = document.getElementById("textInput");
+    const text = input.value.trim();
+    if (text) {
+        sendMessage(text);
+        input.value = "";
+    }
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+    document.getElementById("textInput").addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            sendText();
+        }
+    });
+});
+
+// ── Voice (Web Speech API) ──────────────────────────────────
+function initSpeechRecognition() {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+        setStatus("Voice not supported — use text input");
+        document.getElementById("micBtn").classList.add("disabled");
+        return;
+    }
+
+    recognition = new SpeechRecognition();
+    recognition.continuous = true;
+    recognition.interimResults = false;
+    recognition.lang = "en-US";
+
+    // Dynamic silence timer — scales with how much you've said
+    // Short reply (< 15 words): 3s.  Medium rant: 4-5s.  Full monologue: 7s.
+    const SILENCE_BASE = 3000;
+    const SILENCE_MAX  = 7000;
+    function getSilenceTimeout() {
+        const words = fullTranscript.trim().split(/\s+/).length;
+        return Math.min(SILENCE_BASE + Math.floor(words / 5) * 500, SILENCE_MAX);
+    }
+
+    recognition.onstart = () => {
+        isRecording = true;
+        manualStop = false;
+        fullTranscript = "";
+        document.getElementById("micBtn").classList.add("recording");
+        setStatus("Listening...");
+    };
+
+    recognition.onresult = (event) => {
+        // Only final results come through (interimResults = false)
+        const latest = event.results[event.results.length - 1];
+        if (latest.isFinal) {
+            const chunk = latest[0].transcript.trim();
+            fullTranscript = (fullTranscript + " " + chunk).trim();
+
+            // ── Dictate mode: live append to a growing message in chat ──
+            if (currentMode === "dictate") {
+                dictateAccumulator = fullTranscript;
+                if (!dictateMessageEl) {
+                    const area = document.getElementById("chatArea");
+                    dictateMessageEl = document.createElement("div");
+                    dictateMessageEl.className = "message user";
+                    dictateMessageEl.innerHTML = '<div class="speaker">Bryan (dictating)</div>' + escapeHtml(dictateAccumulator);
+                    area.appendChild(dictateMessageEl);
+                    area.scrollTop = area.scrollHeight;
+                } else {
+                    dictateMessageEl.innerHTML = '<div class="speaker">Bryan (dictating)</div>' + escapeHtml(dictateAccumulator);
+                }
+            }
+        }
+
+        setStatus("Heard: " + fullTranscript.substring(0, 80) + (fullTranscript.length > 80 ? "..." : ""));
+
+        // Silence-timer behavior splits by mode:
+        //   chat/brain-dump → fire to model after silence
+        //   dictate         → don't auto-fire; wait for user to tap mic to stop+save
+        if (silenceTimer) clearTimeout(silenceTimer);
+        if (currentMode !== "dictate") {
+            const timeout = getSilenceTimeout();
+            silenceTimer = setTimeout(() => {
+                if (fullTranscript.trim()) {
+                    stopRecording();
+                    sendMessage(fullTranscript.trim());
+                    fullTranscript = "";
+                }
+            }, timeout);
+        }
+    };
+
+    recognition.onerror = (event) => {
+        console.warn("Speech error:", event.error);
+        if (event.error === "no-speech") {
+            // Browser timed out waiting for speech — restart if user hasn't manually stopped
+            if (isRecording && !isProcessing && !manualStop) {
+                try { recognition.start(); } catch(e) {}
+            }
+            return;
+        }
+        if (silenceTimer) clearTimeout(silenceTimer);
+        if (event.error === "not-allowed") {
+            setStatus("Mic access denied. Check browser permissions.");
+        } else if (event.error !== "aborted") {
+            setStatus("Voice error: " + event.error);
+        }
+        stopRecording();
+    };
+
+    recognition.onend = () => {
+        // If user manually stopped, clean up and done
+        if (manualStop) {
+            isRecording = false;
+            document.getElementById("micBtn").classList.remove("recording");
+            if (!isProcessing) setStatus("Ready");
+            return;
+        }
+
+        // If there's unsent transcript when recognition ends, send it
+        if (fullTranscript.trim() && isRecording) {
+            if (silenceTimer) clearTimeout(silenceTimer);
+            const pending = fullTranscript.trim();
+            fullTranscript = "";
+            isRecording = false;
+            document.getElementById("micBtn").classList.remove("recording");
+            sendMessage(pending);
+            return;
+        }
+
+        // Browser auto-stopped (silence timeout) — restart silently if still in recording mode
+        if (isRecording && !isProcessing) {
+            try { recognition.start(); } catch(e) {}
+            return;
+        }
+
+        isRecording = false;
+        document.getElementById("micBtn").classList.remove("recording");
+        if (!isProcessing) setStatus("Ready");
+    };
+}
+
+function toggleMic() {
+    if (document.getElementById("micBtn").classList.contains("disabled")) return;
+    if (isRecording) {
+        stopRecording();
+    } else {
+        startRecording();
+    }
+}
+
+function startRecording() {
+    if (!recognition) initSpeechRecognition();
+    if (!recognition) return;
+
+    // Don't open mic while muted
+    if (isMuted) {
+        setStatus("Muted — tap 🔊 to unmute");
+        return;
+    }
+
+    // Don't open mic while companion is still speaking
+    if (isSpeaking) {
+        setStatus("Waiting for companion to finish...");
+        return;
+    }
+
+    // Stop any TTS first
+    window.speechSynthesis.cancel();
+    isSpeaking = false;
+
+    try {
+        recognition.start();
+    } catch (e) {
+        console.warn("Recognition start error:", e);
+        setStatus("Mic error: " + e.message);
+    }
+}
+
+function stopRecording() {
+    manualStop = true;
+    isRecording = false;
+    document.getElementById("micBtn").classList.remove("recording");
+    if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
+    if (recognition) {
+        try { recognition.stop(); } catch(e) {}
+    }
+    // Dictate mode: save the accumulated transcript to journal, then reset
+    if (currentMode === "dictate" && dictateAccumulator.trim()) {
+        saveDictation(dictateAccumulator.trim());
+    }
+}
+
+async function saveDictation(text) {
+    try {
+        setStatus("Saving dictation…");
+        const resp = await apiCall("/api/dictate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ text: text, session: sessionId, source: "voice" }),
+        });
+        const data = await resp.json();
+        if (data.saved) {
+            // Mark the in-chat message as saved
+            if (dictateMessageEl) {
+                const stamp = document.createElement("div");
+                stamp.style.cssText = "font-size:10px;color:#10b981;margin-top:6px;font-weight:600;letter-spacing:0.4px;";
+                stamp.textContent = "✓ SAVED · " + (data.path || "journal");
+                dictateMessageEl.appendChild(stamp);
+            }
+            setStatus("Saved");
+            // Reset for next dictation in same session
+            dictateAccumulator = "";
+            dictateMessageEl = null;
+            fullTranscript = "";
+        } else {
+            addSystemMessage("Dictation save returned no confirmation");
+        }
+    } catch (e) {
+        addSystemMessage("Dictation save failed: " + e.message);
+    }
+}
+
+// ── Mute Control ───────────────────────────────────────────
+function toggleMute() {
+    isMuted = !isMuted;
+    const btn = document.getElementById("muteBtn");
+    if (isMuted) {
+        btn.classList.add("muted");
+        btn.textContent = "🔇";
+        btn.title = "Unmute";
+        // Stop listening if active
+        if (isRecording) stopRecording();
+        // Stop any TTS
+        if (ttsAudio) { ttsAudio.pause(); ttsAudio = null; }
+        window.speechSynthesis.cancel();
+        isSpeaking = false;
+        setStatus("Muted — session alive");
+    } else {
+        btn.classList.remove("muted");
+        btn.textContent = "🔊";
+        btn.title = "Mute";
+        setStatus("Unmuted — ready");
+    }
+}
+
+// ── TTS (Browser Speech Synthesis) ──────────────────────────
+let isSpeaking = false;
+let selectedVoice = null;
+
+const VOICE_PRIORITY = [
+    "Google UK English Female",
+    "Google US English",
+    "Google UK English Male",
+];
+
+const VOICE_FALLBACK_KEYWORDS = [
+    "enhanced", "premium",
+    "Samantha", "Karen", "Moira", "Tessa", "Daniel",
+    "Google",
+];
+
+function pickBestVoice() {
+    const voices = window.speechSynthesis.getVoices();
+    if (!voices.length) return null;
+    for (const name of VOICE_PRIORITY) {
+        const v = voices.find(v => v.name === name || v.name.startsWith(name));
+        if (v) return v;
+    }
+    for (const kw of VOICE_FALLBACK_KEYWORDS) {
+        const v = voices.find(v => v.name.toLowerCase().includes(kw.toLowerCase()) && v.lang.startsWith("en"));
+        if (v) return v;
+    }
+    return voices.find(v => v.lang === "en-US") || voices.find(v => v.lang === "en-GB") || voices.find(v => v.lang.startsWith("en")) || voices[0];
+}
+
+let ttsAudio = null;
+
+function speak(text, onFinished) {
+    if (isMuted) {
+        if (onFinished) onFinished();
+        return;
+    }
+    // Stop any current playback
+    if (ttsAudio) { ttsAudio.pause(); ttsAudio = null; }
+    window.speechSynthesis.cancel();
+    isSpeaking = true;
+
+    // Try ElevenLabs via server
+    apiCall("/api/tts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: text }),
+    }).then(resp => {
+        if (resp.headers.get("Content-Type")?.includes("audio")) {
+            return resp.blob();
+        }
+        // Server returned JSON (no API key / fallback)
+        throw new Error("no-audio");
+    }).then(blob => {
+        const url = URL.createObjectURL(blob);
+        ttsAudio = new Audio(url);
+        ttsAudio.onended = () => {
+            isSpeaking = false;
+            setStatus("Your turn...");
+            URL.revokeObjectURL(url);
+            if (onFinished) onFinished();
+        };
+        ttsAudio.onerror = () => {
+            isSpeaking = false;
+            URL.revokeObjectURL(url);
+            if (onFinished) onFinished();
+        };
+        ttsAudio.play();
+    }).catch(() => {
+        // Fallback to browser TTS
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.rate = 1.0;
+        utterance.pitch = 1.0;
+        if (selectedVoice) utterance.voice = selectedVoice;
+        utterance.onend = () => { isSpeaking = false; setStatus("Your turn..."); if (onFinished) onFinished(); };
+        utterance.onerror = () => { isSpeaking = false; if (onFinished) onFinished(); };
+        window.speechSynthesis.speak(utterance);
+    });
+}
+
+window.speechSynthesis.onvoiceschanged = () => {
+    selectedVoice = pickBestVoice();
+};
+selectedVoice = pickBestVoice();
+
+// ── Session Management ──────────────────────────────────────
+async function saveSession() {
+    try {
+        const resp = await apiCall("/api/save", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ session: sessionId }),
+        });
+        const data = await resp.json();
+        if (data.saved) {
+            addSystemMessage("Session saved to journal");
+            setStatus("Saved");
+        } else {
+            addSystemMessage("Nothing to save yet");
+        }
+    } catch (e) {
+        addSystemMessage("Save failed");
+    }
+}
+
+async function resetSession() {
+    try {
+        await apiCall("/api/reset", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ session: sessionId }),
+        });
+        // New session ID
+        sessionId = "s_" + Date.now();
+        isStarred = false;
+        const starBtn = document.getElementById("starBtn");
+        starBtn.textContent = "☆";
+        starBtn.classList.remove("starred");
+        document.getElementById("chatArea").innerHTML =
+            '<div class="message system">New session started. I\'m here.</div>';
+        setStatus("Ready");
+    } catch (e) {
+        addSystemMessage("Reset failed");
+    }
+}
+
+// ── Utilities ───────────────────────────────────────────────
+function setStatus(text) {
+    document.getElementById("status").textContent = text;
+}
+
+// ── Star Session ────────────────────────────────────────────
+let isStarred = false;
+
+async function starSession() {
+    if (isStarred) return;
+    try {
+        const resp = await apiCall("/api/star", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ session: sessionId }),
+        });
+        const data = await resp.json();
+        if (data.starred) {
+            isStarred = true;
+            const btn = document.getElementById("starBtn");
+            btn.textContent = "★";
+            btn.classList.add("starred");
+            btn.title = "Starred as training example";
+            addSystemMessage("Conversation starred as training example");
+        } else {
+            addSystemMessage("Nothing to star yet — have a conversation first");
+        }
+    } catch (e) {
+        addSystemMessage("Star failed");
+    }
+}
+
+// ── Session List & Restore ──────────────────────────────────
+async function showSessions() {
+    try {
+        const resp = await apiCall("/api/sessions");
+        const data = await resp.json();
+        const sessions = data.sessions || [];
+
+        if (!sessions.length) {
+            addSystemMessage("No saved sessions found");
+            return;
+        }
+
+        const area = document.getElementById("chatArea");
+        const panel = document.createElement("div");
+        panel.className = "message system";
+        panel.style.cssText = "background:#1a1a1a;border:1px solid #333;border-radius:10px;padding:12px;max-width:100%;";
+        panel.innerHTML = '<div style="font-weight:700;color:#e5b524;margin-bottom:8px;">Past Sessions</div>' +
+            sessions.map(s => {
+                const date = s.updated_at ? new Date(s.updated_at).toLocaleDateString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "";
+                return `<div style="padding:6px 0;border-bottom:1px solid #2a2a2a;cursor:pointer;" onclick="restoreSession('${s.session_id}')">
+                    <span style="color:#e5b524;font-size:11px;">${date}</span>
+                    <span style="font-size:12px;margin-left:8px;">${escapeHtml(s.preview)}...</span>
+                    <span style="color:#6b7280;font-size:10px;margin-left:6px;">(${s.message_count} msgs)</span>
+                </div>`;
+            }).join("") +
+            '<div style="text-align:center;margin-top:8px;"><button onclick="this.parentElement.parentElement.remove()" style="background:none;border:1px solid #333;color:#6b7280;border-radius:12px;padding:4px 12px;font-size:11px;cursor:pointer;">Close</button></div>';
+        area.appendChild(panel);
+        area.scrollTop = area.scrollHeight;
+    } catch (e) {
+        addSystemMessage("Failed to load sessions");
+    }
+}
+
+async function restoreSession(sid) {
+    try {
+        const resp = await apiCall("/api/session/" + sid);
+        const data = await resp.json();
+        if (data.messages && data.messages.length) {
+            sessionId = sid;
+            const area = document.getElementById("chatArea");
+            area.innerHTML = '<div class="message system">Restored session — ' + data.messages.length + ' messages</div>';
+            data.messages.forEach(m => addMessage(m.role, m.content));
+            setStatus("Session restored — " + data.messages.length + " messages");
+        }
+    } catch (e) {
+        addSystemMessage("Failed to restore session");
+    }
+}
+
+// ── Training Data UI ──────────────────────────────────────────
+const TAGS = ["code","strategy","financial","personal","research","operations","brainstorm","task-review","troubleshoot"];
+
+function showTraining() {
+    document.getElementById("trainingOverlay").classList.add("active");
+    loadTrainingStats();
+    loadTrainingPairs();
+}
+function hideTraining() { document.getElementById("trainingOverlay").classList.remove("active"); }
+
+async function loadTrainingStats() {
+    try {
+        const r = await apiCall("/api/training-stats");
+        const s = await r.json();
+        document.getElementById("statTotal").textContent = s.total_messages || 0;
+        document.getElementById("statRated").textContent = s.rated_messages || 0;
+        document.getElementById("statStarred").textContent = s.starred_sessions || 0;
+    } catch(e) { console.error("Stats error:", e); }
+}
+
+async function loadTrainingPairs() {
+    const list = document.getElementById("pairList");
+    list.innerHTML = '<div style="color:#6b7280;text-align:center;padding:20px">Loading...</div>';
+    try {
+        const r = await apiCall("/api/training-pairs");
+        const d = await r.json();
+        if (!d.pairs || !d.pairs.length) {
+            list.innerHTML = '<div style="color:#6b7280;text-align:center;padding:20px">No pairs yet. Start a conversation!</div>';
+            return;
+        }
+        list.innerHTML = d.pairs.map(p => `
+            <div class="pair-card" data-user-id="${p.user_msg_id}" data-asst-id="${p.asst_msg_id}">
+                <div class="pair-meta">
+                    <span class="session-id">${p.session_id.substring(0,12)}</span>
+                    <div class="star-rating">
+                        ${[1,2,3,4,5].map(n => `<button class="${p.quality >= n ? 'active' : ''}" onclick="ratePair(${p.user_msg_id},${p.asst_msg_id},${n},this)">${p.quality >= n ? '\u2605' : '\u2606'}</button>`).join('')}
+                    </div>
+                </div>
+                <div class="pair-user">${esc(p.user_content.substring(0,150))}</div>
+                <div class="pair-asst">${esc(p.assistant_content.substring(0,150))}</div>
+                <div class="tag-pills">
+                    ${TAGS.map(t => `<button class="tag-pill ${(p.tags||[]).includes(t)?'active':''}" onclick="toggleTag(${p.user_msg_id},'${t}',this)">${t}</button>`).join('')}
+                </div>
+            </div>
+        `).join('');
+    } catch(e) {
+        list.innerHTML = '<div style="color:#ef4444;text-align:center;padding:20px">Error loading pairs</div>';
+    }
+}
+
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+async function ratePair(userId, asstId, quality, btn) {
+    try {
+        await apiCall("/api/rate", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({message_id: userId, quality})});
+        await apiCall("/api/rate", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({message_id: asstId, quality})});
+        const stars = btn.parentElement.querySelectorAll('button');
+        stars.forEach((s,i) => { s.className = i < quality ? 'active' : ''; s.textContent = i < quality ? '\u2605' : '\u2606'; });
+        loadTrainingStats();
+    } catch(e) { console.error("Rate error:", e); }
+}
+
+async function toggleTag(msgId, tag, btn) {
+    const card = btn.closest('.pair-card');
+    const activeTags = [...card.querySelectorAll('.tag-pill.active')].map(b => b.textContent);
+    if (activeTags.includes(tag)) {
+        activeTags.splice(activeTags.indexOf(tag), 1);
+        btn.classList.remove('active');
+    } else {
+        activeTags.push(tag);
+        btn.classList.add('active');
+    }
+    try {
+        await apiCall("/api/tag", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({message_id: msgId, tags: activeTags})});
+    } catch(e) { console.error("Tag error:", e); }
+}
+
+async function exportTraining() {
+    const btn = event.target;
+    btn.textContent = "Exporting...";
+    btn.disabled = true;
+    try {
+        const r = await apiCall("/api/export-training", {method:"POST", headers:{"Content-Type":"application/json"}, body:"{}"});
+        const d = await r.json();
+        btn.textContent = `Exported ${d.exported || 0} pairs`;
+        setTimeout(() => { btn.textContent = "Export to Pipeline"; btn.disabled = false; }, 3000);
+    } catch(e) {
+        btn.textContent = "Export failed";
+        setTimeout(() => { btn.textContent = "Export to Pipeline"; btn.disabled = false; }, 3000);
+    }
+}
+
+// ── Init ────────────────────────────────────────────────────
+// Only call loadModels if config is present; otherwise the setup screen
+// will gate user input and call loadModels after successful connect.
+if (getBackend() && getToken()) loadModels();
+initSpeechRecognition();
+window.speechSynthesis.getVoices(); // Preload
+
+// Keyboard shortcut: Space to toggle mic (when not typing)
+document.addEventListener("keydown", (e) => {
+    if (e.code === "Space" && document.activeElement.tagName !== "INPUT") {
+        e.preventDefault();
+        toggleMic();
+    }
+});
+
+// PWA — register service worker (relative path so subpath github.io install works)
+if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
+    navigator.serviceWorker.register('./sw.js').catch(err =>
+        console.log('[companion] SW registration failed:', err)
+    );
+}
+
+// ── Setup screen (first-run + auth recovery) ────────────────
+function showSetup(errorMsg) {
+    document.getElementById("setup").hidden = false;
+    const u = document.getElementById("setup-url");
+    if (localStorage.getItem(LS_BACKEND)) u.value = localStorage.getItem(LS_BACKEND);
+    if (errorMsg) {
+        const el = document.getElementById("setup-error");
+        el.textContent = errorMsg;
+        el.hidden = false;
+    }
+}
+function hideSetup() { document.getElementById("setup").hidden = true; }
+
+async function attemptConnect() {
+    const url = document.getElementById("setup-url").value.trim().replace(/\/$/, "");
+    const token = document.getElementById("setup-token").value.trim();
+    const errEl = document.getElementById("setup-error");
+    errEl.hidden = true;
+    if (!url || !token) { errEl.textContent = "Both fields required."; errEl.hidden = false; return; }
+    const btn = document.getElementById("setup-go");
+    btn.disabled = true; btn.textContent = "Connecting…";
+    try {
+        const r = await fetch(url + "/api/health", { headers: { "Authorization": "Bearer " + token } });
+        if (r.status === 401 || r.status === 403) throw new Error("Token rejected");
+        if (!r.ok) throw new Error("Backend returned HTTP " + r.status);
+        localStorage.setItem(LS_BACKEND, url);
+        localStorage.setItem(LS_TOKEN, token);
+        hideSetup();
+        loadModels();
+    } catch (e) {
+        errEl.textContent = String(e.message || e);
+        errEl.hidden = false;
+    } finally {
+        btn.disabled = false; btn.textContent = "Connect";
+    }
+}
+
+function resetCreds() {
+    if (!confirm("Re-enter backend URL and token?")) return;
+    localStorage.removeItem(LS_BACKEND);
+    localStorage.removeItem(LS_TOKEN);
+    showSetup();
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+    document.getElementById("setup-go").addEventListener("click", attemptConnect);
+    document.getElementById("setup-token").addEventListener("keydown", (e) => {
+        if (e.key === "Enter") attemptConnect();
+    });
+    if (!getBackend() || !getToken()) {
+        showSetup();
+    }
+});
+</script>
+
+</body>
+</html>
