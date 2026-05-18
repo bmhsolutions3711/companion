@@ -412,6 +412,7 @@
     <button class="mode-btn active" data-mode="companion" onclick="selectMode('companion')">🧠 Companion</button>
     <button class="mode-btn" data-mode="brain-dump" onclick="selectMode('brain-dump')">💨 Brain Dump</button>
     <button class="mode-btn" data-mode="dictate" onclick="selectMode('dictate')">🎤 Dictate</button>
+    <button class="mode-btn" data-mode="coach" onclick="selectMode('coach')">🎯 Coach</button>
 </div>
 <div class="model-info" id="modelInfo"></div>
 
@@ -501,6 +502,12 @@ let fullTranscript = "";
 let dictateAccumulator = "";  // growing transcript shown in chat area while dictating
 let dictateMessageEl = null;  // DOM node we keep updating
 
+// Coach mode state (Phase B1 — hands-free prompted brain dump)
+let coachActive = false;
+let coachCurrentPrompt = null;
+let coachSessionId = null;
+let coachSource = "brain_dump";
+
 // ── Model Selector ──────────────────────────────────────────
 async function loadModels() {
     try {
@@ -543,14 +550,18 @@ function updateModelInfo() {
 }
 
 function selectMode(mode) {
+    // Leaving coach? Stop the loop cleanly before switching away.
+    if (currentMode === "coach" && mode !== "coach") {
+        coachStop();
+    }
     currentMode = mode;
     document.querySelectorAll(".mode-btn").forEach(b => {
         b.classList.toggle("active", b.dataset.mode === mode);
     });
-    // Hide model selector + auto-listen toggle in dictate mode (no model = no response)
+    // Hide model selector + auto-listen toggle in dictate/coach modes (no model = no response)
     const modelBar = document.getElementById("modelBar");
     const settingsRow = document.querySelector(".settings-row");
-    if (mode === "dictate") {
+    if (mode === "dictate" || mode === "coach") {
         if (modelBar) modelBar.style.display = "none";
         if (settingsRow) settingsRow.style.display = "none";
     } else {
@@ -563,8 +574,119 @@ function selectMode(mode) {
     updateModelInfo();
     const label = mode === "brain-dump" ? "Brain Dump mode — just talk"
                 : mode === "dictate"    ? "Dictate mode — talking is just saved, no model response. Tap mic to start, tap again to save."
+                : mode === "coach"      ? "Coach mode — I'll prompt, you answer. Say 'next' to skip, 'stop' to end."
                 : "Companion mode";
     addSystemMessage(label);
+    if (mode === "coach") coachStart();
+}
+
+// ── Voice Coach mode (Phase B1) ───────────────────────────────────
+// Hands-free brain-dump loop: server picks prompt → ElevenLabs reads it →
+// mic auto-opens → silence triggers save → next prompt queued.
+function coachStart() {
+    coachActive = true;
+    coachSessionId = "coach_" + Date.now();
+    addSystemMessage("Loading first prompt…");
+    coachFetchAndPlayNext();
+}
+
+function coachStop() {
+    coachActive = false;
+    coachCurrentPrompt = null;
+    if (typeof ttsAudio !== "undefined" && ttsAudio) { ttsAudio.pause(); ttsAudio = null; }
+    if (typeof isSpeaking !== "undefined") isSpeaking = false;
+    window.speechSynthesis.cancel();
+    if (isRecording) stopRecording();
+    setStatus("Coach stopped");
+}
+
+async function coachFetchAndPlayNext() {
+    if (!coachActive) return;
+    try {
+        const resp = await apiCall("/api/voice-prompt/next?source=" + encodeURIComponent(coachSource));
+        const data = await resp.json();
+        if (data.done || !data.prompt_id) {
+            addSystemMessage("Coach: queue empty. All prompts in this source are captured.");
+            coachStop();
+            return;
+        }
+        coachCurrentPrompt = data;
+        const intro = `${data.prompt_id} (${data.arc}${data.phase ? ", " + data.phase : ""}) — ${data.queue_remaining} remaining`;
+        addMessage("assistant", `${intro}\n\n${data.text}`);
+        // Speak the prompt; when TTS finishes, open mic for the answer.
+        speak(data.text, () => {
+            if (!coachActive) return;
+            startRecording();
+        });
+    } catch (e) {
+        console.error("[coach] fetch next failed:", e);
+        addSystemMessage("Coach: failed to fetch prompt — " + e.message);
+        coachStop();
+    }
+}
+
+async function coachHandleTranscript(transcript) {
+    if (!coachActive || !coachCurrentPrompt) return;
+    const text = (transcript || "").trim();
+    // Voice command parsing (short utterances only, so real answers don't trigger by accident)
+    const cmd = text.toLowerCase().replace(/[.!?,]+$/, "");
+    if (text.length < 25) {
+        if (cmd === "stop" || cmd === "exit" || cmd === "end coach") {
+            addSystemMessage("Coach: stopping by voice command.");
+            coachStop();
+            return;
+        }
+        if (cmd === "skip" || cmd === "next" || cmd === "pass") {
+            addSystemMessage(`Skipped ${coachCurrentPrompt.prompt_id}.`);
+            try {
+                await apiCall("/api/voice-prompt/skip", {
+                    method: "POST",
+                    headers: {"Content-Type": "application/json"},
+                    body: JSON.stringify({prompt_id: coachCurrentPrompt.prompt_id}),
+                });
+            } catch (e) { console.warn(e); }
+            coachCurrentPrompt = null;
+            coachFetchAndPlayNext();
+            return;
+        }
+    }
+    // Real answer — log it
+    addMessage("user", text);
+    try {
+        const resp = await apiCall("/api/voice-prompt/log", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({
+                prompt_id: coachCurrentPrompt.prompt_id,
+                transcript: text,
+                session_id: coachSessionId,
+            }),
+        });
+        const data = await resp.json();
+        if (data.logged) {
+            addSystemMessage(`✓ Logged ${coachCurrentPrompt.prompt_id} → pair ${data.pair_id} (${text.length} chars)`);
+        } else {
+            addSystemMessage(`⚠ Not logged: ${data.status}`);
+        }
+        coachCurrentPrompt = data.next || null;
+        if (!coachActive) return;
+        if (!data.next) {
+            addSystemMessage("Coach: queue empty. Done for now.");
+            coachStop();
+            return;
+        }
+        const np = data.next;
+        const intro = `${np.prompt_id} (${np.arc}${np.phase ? ", " + np.phase : ""}) — ${np.queue_remaining} remaining`;
+        addMessage("assistant", `${intro}\n\n${np.text}`);
+        speak(np.text, () => {
+            if (!coachActive) return;
+            startRecording();
+        });
+    } catch (e) {
+        console.error("[coach] log failed:", e);
+        addSystemMessage("Coach: log failed — " + e.message);
+        coachStop();
+    }
 }
 
 // ── Chat ────────────────────────────────────────────────────
@@ -760,6 +882,7 @@ function initSpeechRecognition() {
 
         // Silence-timer behavior splits by mode:
         //   chat/brain-dump → fire to model after silence
+        //   coach           → fire to coachHandleTranscript after silence
         //   dictate         → don't auto-fire; wait for user to tap mic to stop+save
         if (silenceTimer) clearTimeout(silenceTimer);
         if (currentMode !== "dictate") {
@@ -767,8 +890,13 @@ function initSpeechRecognition() {
             silenceTimer = setTimeout(() => {
                 if (fullTranscript.trim()) {
                     stopRecording();
-                    sendMessage(fullTranscript.trim());
+                    const pending = fullTranscript.trim();
                     fullTranscript = "";
+                    if (currentMode === "coach") {
+                        coachHandleTranscript(pending);
+                    } else {
+                        sendMessage(pending);
+                    }
                 }
             }, timeout);
         }
@@ -810,14 +938,18 @@ function initSpeechRecognition() {
             return;
         }
 
-        // If there's unsent transcript when recognition ends, send it (chat modes only)
+        // If there's unsent transcript when recognition ends, send it (chat/coach modes only)
         if (fullTranscript.trim() && isRecording) {
             if (silenceTimer) clearTimeout(silenceTimer);
             const pending = fullTranscript.trim();
             fullTranscript = "";
             isRecording = false;
             document.getElementById("micBtn").classList.remove("recording");
-            sendMessage(pending);
+            if (currentMode === "coach") {
+                coachHandleTranscript(pending);
+            } else {
+                sendMessage(pending);
+            }
             return;
         }
 
