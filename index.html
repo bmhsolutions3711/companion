@@ -428,12 +428,13 @@
 
 <!-- Chat view -->
 <div id="chatView" class="view hidden">
-    <div class="model-bar" id="modelBar"></div>
     <div class="mode-bar">
-        <button class="mode-btn active" data-mode="companion">Talk</button>
+        <button class="mode-btn active" data-mode="talk">Talk</button>
+        <button class="mode-btn" data-mode="analysis">Analysis</button>
         <button class="mode-btn" data-mode="dictate">Dictate</button>
         <button class="mode-btn" data-mode="coach">Coach</button>
     </div>
+    <div class="model-bar" id="modelBar" hidden></div>
     <div class="chat-area" id="chatArea"></div>
     <div class="controls">
         <div class="voice-row">
@@ -522,8 +523,9 @@ async function setupConnect() {
 
 // ── State ──────────────────────────────────────────────────────────────
 let sessionId = null;
-let currentModel = null;
-let currentMode = "companion";
+let currentModel = "gemma4-talk";
+let currentMode = "talk";
+let analysisModel = "gemma4-companion";  // E4B by default in Analysis; can flip to gemma4-deep
 let conversationsList = [];
 let isProcessing = false;
 let isRecording = false;
@@ -666,30 +668,26 @@ function openChat(id, fresh) {
 
 document.getElementById("newChatFab").addEventListener("click", newConversation);
 
-// ── Models ─────────────────────────────────────────────────────────────
+// ── Models (only used inside Analysis mode — Fast vs Deep toggle) ──────
 async function loadModels() {
-    try {
-        const r = await apiCall("/api/models");
-        const d = await r.json();
-        if (!currentModel) currentModel = d.default || Object.keys(d.models)[0];
-        const bar = document.getElementById("modelBar");
-        bar.innerHTML = Object.entries(d.models).map(([id, m]) => `
-            <button class="model-btn ${id === currentModel ? 'active' : ''}"
-                    data-model="${id}" title="${escapeHtml(m.desc)}">
-                ${escapeHtml(m.name)}
-            </button>
-        `).join("");
-        bar.querySelectorAll(".model-btn").forEach(b => {
-            b.addEventListener("click", () => selectModel(b.dataset.model));
-        });
-    } catch (e) { console.error("loadModels:", e); }
+    // Build the Analysis-mode model toggle: gemma4-companion (E4B fast) vs gemma4-deep (26B)
+    const bar = document.getElementById("modelBar");
+    bar.innerHTML = `
+        <button class="model-btn active" data-model="gemma4-companion" title="E4B — fast">Fast</button>
+        <button class="model-btn" data-model="gemma4-deep" title="26B MoE — deeper reasoning">Deep</button>
+    `;
+    bar.querySelectorAll(".model-btn").forEach(b => {
+        b.addEventListener("click", () => selectAnalysisModel(b.dataset.model));
+    });
 }
 
-function selectModel(id) {
-    currentModel = id;
+function selectAnalysisModel(id) {
+    analysisModel = id;
     document.querySelectorAll("#modelBar .model-btn").forEach(b => {
         b.classList.toggle("active", b.dataset.model === id);
     });
+    // If currently in Analysis mode, switch the active model
+    if (currentMode === "analysis") currentModel = id;
 }
 
 // ── Mode toggle ────────────────────────────────────────────────────────
@@ -703,13 +701,25 @@ function selectMode(mode) {
     document.querySelectorAll(".mode-btn").forEach(b => {
         b.classList.toggle("active", b.dataset.mode === mode);
     });
+
+    // Mode → model + UI visibility mapping
     const modelBar = document.getElementById("modelBar");
-    modelBar.style.display = (mode === "coach" || mode === "dictate") ? "none" : "";
+    if (mode === "talk") {
+        currentModel = "gemma4-talk";
+        modelBar.hidden = true;
+    } else if (mode === "analysis") {
+        currentModel = analysisModel;
+        modelBar.hidden = false;
+    } else {
+        modelBar.hidden = true;  // coach + dictate don't need model selector
+    }
+
     dictateAccumulator = "";
     dictateMessageEl = null;
-    const label = mode === "dictate" ? "Dictate — voice saves only, no reply."
-                : mode === "coach"   ? "Coach — I prompt, you answer. Say 'next' to skip, 'stop' to end."
-                : "Talk — I'm listening.";
+    const label = mode === "dictate"  ? "Dictate — voice saves only, no reply."
+                : mode === "coach"    ? "Coach — I prompt, you answer. Say 'next' to skip, 'stop' to end."
+                : mode === "analysis" ? "Analysis — full stack visibility. Push back welcome."
+                                      : "Talk — just dump it. Quick back-and-forth.";
     addSystemMessage(label);
     if (mode === "coach") coachStart();
 }
