@@ -433,7 +433,7 @@
 <header class="topbar">
     <button id="backBtn" class="icon-btn" hidden title="Back to chats">‹</button>
     <div class="title" id="topTitle">Chats</div>
-    <span id="buildPill" style="font-size:9px;color:#6b7280;font-family:ui-monospace,monospace;padding:2px 6px;border:1px solid #333;border-radius:6px;">v18</span>
+    <span id="buildPill" style="font-size:9px;color:#6b7280;font-family:ui-monospace,monospace;padding:2px 6px;border:1px solid #333;border-radius:6px;">v19</span>
     <button id="memoryBtn" class="icon-btn has-badge" title="Memory">
         <span>◉</span>
         <span class="badge" id="memoryBadge" hidden>0</span>
@@ -982,29 +982,12 @@ function initSpeechRecognition() {
                 } else {
                     dictateMessageEl.innerHTML = '<div class="speaker">Bryan (dictating)</div>' + escapeHtml(dictateAccumulator);
                 }
-                // (speaker tags above remain "Bryan (dictating)" — no Atlas swap needed)
             }
         }
         setStatus("Heard: " + fullTranscript.substring(0, 80) + (fullTranscript.length > 80 ? "..." : ""));
+        // Reset the send-ready timer on every fresh speech result.
+        // The actual send happens in onend (Chrome's natural silence detector).
         if (silenceTimer) clearTimeout(silenceTimer);
-        if (currentMode !== "dictate") {
-            // 5 sec silence after any speech → send. Survives recognition auto-restarts
-            // because the timer ID lives outside recognition's lifecycle.
-            silenceTimer = setTimeout(() => {
-                if (fullTranscript.trim()) {
-                    manualStop = true;        // prevent onend from auto-restarting
-                    try { recognition.stop(); } catch(e) {}
-                    const pending = fullTranscript.trim();
-                    fullTranscript = "";
-                    isRecording = false;
-                    micSessionStart = null;
-                    document.getElementById("micBtn").classList.remove("recording");
-                    setStatus("Sending...");
-                    if (currentMode === "coach") coachHandleTranscript(pending);
-                    else sendMessage(pending);
-                }
-            }, getSilenceTimeout());
-        }
     };
     // True if we're inside the user's mic-open session and should auto-restart
     // on silent timeouts (no-speech error / clean onend with no transcript).
@@ -1041,17 +1024,9 @@ function initSpeechRecognition() {
             }
             return;
         }
-        // CRITICAL: Don't auto-send on browser-induced onend. The browser auto-stops
-        // recognition after ~1-3s of silence which would fire sendMessage instantly,
-        // overriding our silence timer. Instead, silently restart recognition.
-        // The silence timer (set in onresult) survives across restarts and fires
-        // ONLY after the full silence window with no new speech. That timer is what sends.
-        if (withinMicSession()) {
-            safeRestart("onend"); return;
-        }
-        // Mic session ended — if transcript pending (unlikely with timer in place),
-        // send it; otherwise close cleanly.
-        if (fullTranscript.trim()) {
+        // Transcript ready and recognition ended (browser auto-stop after silence) — send it.
+        // This is the working v15 behavior. Chrome's natural ~1-3s silence IS our send trigger.
+        if (fullTranscript.trim() && isRecording) {
             if (silenceTimer) clearTimeout(silenceTimer);
             const pending = fullTranscript.trim();
             fullTranscript = "";
@@ -1062,6 +1037,12 @@ function initSpeechRecognition() {
             else sendMessage(pending);
             return;
         }
+        // No transcript yet — still within the 5-min mic-open window, restart silently
+        // so Bryan can take his time before talking.
+        if (withinMicSession()) {
+            safeRestart("onend-no-transcript"); return;
+        }
+        // Otherwise close cleanly
         isRecording = false;
         micSessionStart = null;
         document.getElementById("micBtn").classList.remove("recording");
