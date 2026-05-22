@@ -433,7 +433,7 @@
 <header class="topbar">
     <button id="backBtn" class="icon-btn" hidden title="Back to chats">‹</button>
     <div class="title" id="topTitle">Chats</div>
-    <span id="buildPill" style="font-size:9px;color:#6b7280;font-family:ui-monospace,monospace;padding:2px 6px;border:1px solid #333;border-radius:6px;">v19</span>
+    <span id="buildPill" style="font-size:9px;color:#6b7280;font-family:ui-monospace,monospace;padding:2px 6px;border:1px solid #333;border-radius:6px;">v20</span>
     <button id="memoryBtn" class="icon-btn has-badge" title="Memory">
         <span>◉</span>
         <span class="badge" id="memoryBadge" hidden>0</span>
@@ -919,19 +919,18 @@ function initSpeechRecognition() {
     recognition.interimResults = false;
     recognition.lang = "en-US";
 
-    // Two-phase silence handling:
-    //  - Mic open, no speech yet  → keep restarting recognition up to MAX_OPEN_MIC_MS
-    //    (5 min) so Bryan can think before talking.
-    //  - First turn (quick hello)  → 1.2s silence (snap-send short greetings)
-    //  - Subsequent turns          → 2s silence (room to pause mid-thought)
-    //  - Tap mic anytime to stop early.
+    // Mic timing model:
+    //  - 5 min total mic-open window
+    //  - SHORT transcripts (< 50 words) — send on Chrome's natural ~2s silence
+    //    (onend fires, message goes immediately — feels snappy for quick hellos)
+    //  - LONG transcripts (≥ 50 words) — assume Bryan's mid-brain-dump and may
+    //    pause to think; restart recognition + start a 5s grace timer. If he
+    //    continues talking, transcript accumulates and timer resets. If he
+    //    truly stops for 5s, message sends.
+    //  - Tap mic anytime to manually stop and send.
     const MAX_OPEN_MIC_MS = 5 * 60 * 1000;
-    const FIRST_TURN_SILENCE_MS = 1200;
-    const FOLLOWUP_SILENCE_MS   = 2000;
-    const getSilenceTimeout = () => {
-        const turns = document.querySelectorAll("#chatArea .message.user").length;
-        return turns === 0 ? FIRST_TURN_SILENCE_MS : FOLLOWUP_SILENCE_MS;
-    };
+    const LONG_TRANSCRIPT_WORDS = 50;
+    const LONG_TRANSCRIPT_GRACE_MS = 5000;
 
     // Web Speech API will throw InvalidStateError if you call start() during the
     // brief window when recognition is still tearing down from a previous stop.
@@ -985,9 +984,9 @@ function initSpeechRecognition() {
             }
         }
         setStatus("Heard: " + fullTranscript.substring(0, 80) + (fullTranscript.length > 80 ? "..." : ""));
-        // Reset the send-ready timer on every fresh speech result.
-        // The actual send happens in onend (Chrome's natural silence detector).
-        if (silenceTimer) clearTimeout(silenceTimer);
+        // New speech during a long-transcript grace window resets the 5s timer —
+        // he's still rolling, give him more room.
+        if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
     };
     // True if we're inside the user's mic-open session and should auto-restart
     // on silent timeouts (no-speech error / clean onend with no transcript).
@@ -1010,6 +1009,21 @@ function initSpeechRecognition() {
         stopRecording();
     };
 
+    function commitAndSend() {
+        if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
+        const pending = fullTranscript.trim();
+        if (!pending) return;
+        fullTranscript = "";
+        manualStop = true;
+        try { recognition.stop(); } catch(e) {}
+        isRecording = false;
+        micSessionStart = null;
+        document.getElementById("micBtn").classList.remove("recording");
+        setStatus("Sending...");
+        if (currentMode === "coach") coachHandleTranscript(pending);
+        else sendMessage(pending);
+    }
+
     recognition.onend = () => {
         if (manualStop) {
             isRecording = false;
@@ -1024,21 +1038,24 @@ function initSpeechRecognition() {
             }
             return;
         }
-        // Transcript ready and recognition ended (browser auto-stop after silence) — send it.
-        // This is the working v15 behavior. Chrome's natural ~1-3s silence IS our send trigger.
         if (fullTranscript.trim() && isRecording) {
-            if (silenceTimer) clearTimeout(silenceTimer);
-            const pending = fullTranscript.trim();
-            fullTranscript = "";
-            isRecording = false;
-            micSessionStart = null;
-            document.getElementById("micBtn").classList.remove("recording");
-            if (currentMode === "coach") coachHandleTranscript(pending);
-            else sendMessage(pending);
+            const wordCount = fullTranscript.trim().split(/\s+/).length;
+            // Long brain-dump — give 5s grace for him to continue
+            if (wordCount >= LONG_TRANSCRIPT_WORDS) {
+                setStatus(`${wordCount} words — pause for continuation (5s)...`);
+                if (silenceTimer) clearTimeout(silenceTimer);
+                silenceTimer = setTimeout(() => {
+                    silenceTimer = null;
+                    commitAndSend();
+                }, LONG_TRANSCRIPT_GRACE_MS);
+                safeRestart("long-transcript-grace");
+                return;
+            }
+            // Short — send immediately on Chrome's natural silence
+            commitAndSend();
             return;
         }
         // No transcript yet — still within the 5-min mic-open window, restart silently
-        // so Bryan can take his time before talking.
         if (withinMicSession()) {
             safeRestart("onend-no-transcript"); return;
         }
@@ -1075,6 +1092,7 @@ function stopRecording() {
     if (!isRecording) return;
     manualStop = true;
     micSessionStart = null;
+    if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
     try { recognition.stop(); } catch(e) {}
 }
 
