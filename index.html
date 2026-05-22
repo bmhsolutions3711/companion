@@ -535,6 +535,7 @@ let silenceTimer = null;
 let manualStop = false;
 let ttsAudio = null;
 let isSpeaking = false;
+let micSessionStart = null;   // ms timestamp; survives recognition auto-restarts within one session
 
 // Dictate state
 let dictateAccumulator = "";
@@ -843,18 +844,23 @@ function initSpeechRecognition() {
     recognition.interimResults = false;
     recognition.lang = "en-US";
 
-    const SILENCE_BASE = 3000, SILENCE_MAX = 7000;
-    const getSilenceTimeout = () => {
-        const words = fullTranscript.trim().split(/\s+/).length;
-        return Math.min(SILENCE_BASE + Math.floor(words / 5) * 500, SILENCE_MAX);
-    };
+    // Two-phase silence handling:
+    //  - Mic open, no speech yet  → keep restarting recognition up to MAX_OPEN_MIC_MS
+    //    (5 min) so Bryan can think before talking.
+    //  - Once he's started speaking → 5s silence to allow brief pauses mid-thought.
+    //  - Tap mic anytime to stop early.
+    const MAX_OPEN_MIC_MS = 5 * 60 * 1000;   // 5 min total mic-open session
+    const POST_SPEECH_SILENCE_MS = 5000;     // 5s pause allowed mid-thought
+    const getSilenceTimeout = () => POST_SPEECH_SILENCE_MS;
 
     recognition.onstart = () => {
         isRecording = true;
         manualStop = false;
         if (currentMode !== "dictate") fullTranscript = "";
+        // micSessionStart is set in startRecording so it survives auto-restarts inside
+        // a single user-initiated session.
         document.getElementById("micBtn").classList.add("recording");
-        setStatus("Listening...");
+        setStatus(micSessionStart ? "Listening — take your time..." : "Listening...");
     };
     recognition.onresult = (event) => {
         const latest = event.results[event.results.length - 1];
@@ -889,8 +895,19 @@ function initSpeechRecognition() {
             }, getSilenceTimeout());
         }
     };
+    // True if we're inside the user's mic-open session and should auto-restart
+    // on silent timeouts (no-speech error / clean onend with no transcript).
+    function withinMicSession() {
+        return micSessionStart !== null
+            && isRecording
+            && !isProcessing
+            && !manualStop
+            && (Date.now() - micSessionStart < MAX_OPEN_MIC_MS);
+    }
+
     recognition.onerror = (event) => {
-        if (event.error === "no-speech" && isRecording && !isProcessing && !manualStop) {
+        // no-speech is the common "browser auto-stop after silence" — restart silently
+        if (event.error === "no-speech" && withinMicSession()) {
             try { recognition.start(); } catch(e) {} return;
         }
         if (silenceTimer) clearTimeout(silenceTimer);
@@ -898,9 +915,11 @@ function initSpeechRecognition() {
         else if (event.error !== "aborted") setStatus("Voice error: " + event.error);
         stopRecording();
     };
+
     recognition.onend = () => {
         if (manualStop) {
             isRecording = false;
+            micSessionStart = null;
             document.getElementById("micBtn").classList.remove("recording");
             if (!isProcessing) setStatus("Ready");
             return;
@@ -911,18 +930,29 @@ function initSpeechRecognition() {
             }
             return;
         }
+        // If we have a transcript, the user spoke — send it (post-speech path).
         if (fullTranscript.trim() && isRecording) {
             if (silenceTimer) clearTimeout(silenceTimer);
             const pending = fullTranscript.trim();
             fullTranscript = "";
             isRecording = false;
+            micSessionStart = null;
             document.getElementById("micBtn").classList.remove("recording");
             if (currentMode === "coach") coachHandleTranscript(pending);
             else sendMessage(pending);
-        } else {
-            isRecording = false;
-            document.getElementById("micBtn").classList.remove("recording");
+            return;
         }
+        // No transcript yet — if we're still within the 5-min mic-open window,
+        // restart recognition so Bryan has time to think before talking.
+        if (withinMicSession()) {
+            try { recognition.start(); } catch(e) {}
+            return;
+        }
+        // Otherwise close cleanly
+        isRecording = false;
+        micSessionStart = null;
+        document.getElementById("micBtn").classList.remove("recording");
+        setStatus("Mic timed out — tap to listen again");
     };
 }
 
@@ -930,11 +960,13 @@ function startRecording() {
     if (isRecording) return;
     if (currentMode !== "dictate") fullTranscript = "";
     manualStop = false;
+    micSessionStart = Date.now();  // start the 5-min window
     try { recognition.start(); } catch(e) { console.warn(e); }
 }
 function stopRecording() {
     if (!isRecording) return;
     manualStop = true;
+    micSessionStart = null;
     try { recognition.stop(); } catch(e) {}
 }
 
