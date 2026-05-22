@@ -3,14 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <title>BIK — Companion</title>
+    <title>Atlas — Chief of Staff</title>
     <meta name="theme-color" content="#0f0f0f">
     <link rel="manifest" href="./manifest.json?v=8">
     <link rel="icon" type="image/png" sizes="32x32" href="./static/companion-icon-32.png">
     <link rel="apple-touch-icon" href="./static/companion-icon-180.png">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <meta name="apple-mobile-web-app-title" content="Companion">
+    <meta name="apple-mobile-web-app-title" content="Atlas">
     <link rel="stylesheet" href="./design/bmh-design.css?v=2">
     <style>
         :root {
@@ -392,8 +392,8 @@
 <!-- Setup overlay -->
 <div id="setupOverlay" class="setup-overlay" hidden>
     <div class="setup-card">
-        <h1>BIK Companion</h1>
-        <p class="setup-lead">Connect to your Mac Pro. From <code>~/.config/bmh/.env</code> use <code>COMPANION_TOKEN</code>. Backend URL is your Tailscale host (e.g. <code>https://bryans-macbook-pro-1.tail1ed408.ts.net:8430</code>).</p>
+        <h1>Atlas</h1>
+        <p class="setup-lead">Your Chief of Staff. Connect to the Mac Pro. From <code>~/.config/bmh/.env</code> use <code>COMPANION_TOKEN</code>. Backend URL is your Tailscale host (e.g. <code>https://bryans-macbook-pro-1.tail1ed408.ts.net:8430</code>).</p>
         <label><span>Backend URL</span><input id="setupUrl" type="url" placeholder="https://...ts.net:8430"></label>
         <label><span>Token</span><input id="setupToken" type="password" placeholder="40-char alphanumeric"></label>
         <button id="setupBtn" class="setup-btn">Connect</button>
@@ -420,7 +420,7 @@
         <div class="empty-state" id="emptyList" hidden>
             <h2>Welcome.</h2>
             <p>Tap <strong>+ New Chat</strong> to start.</p>
-            <p style="margin-top: 16px; font-size: 12px;">I remember everything from past conversations.</p>
+            <p style="margin-top: 16px; font-size: 12px;">Atlas remembers everything from past conversations.</p>
         </div>
     </div>
     <button id="newChatFab" class="fab">+ New Chat</button>
@@ -730,7 +730,7 @@ function addMessage(role, text) {
     const area = document.getElementById("chatArea");
     const div = document.createElement("div");
     div.className = `message ${role}`;
-    const speaker = role === "user" ? "Bryan" : "Companion";
+    const speaker = role === "user" ? "Bryan" : "Atlas";
     div.innerHTML = `<div class="speaker">${speaker}</div>${escapeHtml(text)}`;
     area.appendChild(div);
     area.scrollTop = area.scrollHeight;
@@ -879,6 +879,7 @@ function initSpeechRecognition() {
                 } else {
                     dictateMessageEl.innerHTML = '<div class="speaker">Bryan (dictating)</div>' + escapeHtml(dictateAccumulator);
                 }
+                // (speaker tags above remain "Bryan (dictating)" — no Atlas swap needed)
             }
         }
         setStatus("Heard: " + fullTranscript.substring(0, 80) + (fullTranscript.length > 80 ? "..." : ""));

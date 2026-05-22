@@ -1,5 +1,5 @@
-// Voice Companion PWA shell — network-first SW. Backend API calls bypass cache.
-const CACHE_NAME = "comp-shell-v12";
+// Atlas PWA shell — network-first SW. Backend API calls bypass cache.
+const CACHE_NAME = "atlas-shell-v13";
 const SHELL = [
   "./",
   "./index.html",

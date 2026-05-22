@@ -1,7 +1,7 @@
 {
-  "name": "Voice Companion — BMH",
-  "short_name": "Companion",
-  "description": "Voice-first thinking partner — Companion / Brain Dump / Dictate. Talks to a Tailscale-only Flask backend on the Mac.",
+  "name": "Atlas — Bryan's Chief of Staff",
+  "short_name": "Atlas",
+  "description": "Atlas — your Chief of Staff. Quick-capture, deep analysis, voice-first. Talks to a Tailscale-only backend on the Mac.",
   "id": "/companion/",
   "scope": "./",
   "start_url": "./",
