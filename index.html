@@ -921,11 +921,39 @@ function initSpeechRecognition() {
     // Two-phase silence handling:
     //  - Mic open, no speech yet  → keep restarting recognition up to MAX_OPEN_MIC_MS
     //    (5 min) so Bryan can think before talking.
-    //  - Once he's started speaking → 5s silence to allow brief pauses mid-thought.
+    //  - First turn (quick hello)  → 1.2s silence (snap-send short greetings)
+    //  - Subsequent turns          → 2s silence (room to pause mid-thought)
     //  - Tap mic anytime to stop early.
-    const MAX_OPEN_MIC_MS = 5 * 60 * 1000;   // 5 min total mic-open session
-    const POST_SPEECH_SILENCE_MS = 5000;     // 5s pause allowed mid-thought
-    const getSilenceTimeout = () => POST_SPEECH_SILENCE_MS;
+    const MAX_OPEN_MIC_MS = 5 * 60 * 1000;
+    const FIRST_TURN_SILENCE_MS = 1200;
+    const FOLLOWUP_SILENCE_MS   = 2000;
+    const getSilenceTimeout = () => {
+        const turns = document.querySelectorAll("#chatArea .message.user").length;
+        return turns === 0 ? FIRST_TURN_SILENCE_MS : FOLLOWUP_SILENCE_MS;
+    };
+
+    // Web Speech API will throw InvalidStateError if you call start() during the
+    // brief window when recognition is still tearing down from a previous stop.
+    // Always restart through this helper which retries on a microtask boundary.
+    function safeRestart(reason) {
+        if (!withinMicSession()) return;
+        try {
+            recognition.start();
+        } catch (e) {
+            // Defer to next tick — gives the engine time to fully stop
+            setTimeout(() => {
+                if (!withinMicSession()) return;
+                try { recognition.start(); }
+                catch (e2) {
+                    console.warn("[mic] restart failed after retry:", e2, "reason:", reason);
+                    isRecording = false;
+                    micSessionStart = null;
+                    document.getElementById("micBtn").classList.remove("recording");
+                    setStatus("Mic dropped — tap to retry");
+                }
+            }, 60);
+        }
+    }
 
     recognition.onstart = () => {
         isRecording = true;
@@ -990,7 +1018,7 @@ function initSpeechRecognition() {
     recognition.onerror = (event) => {
         // no-speech is the common "browser auto-stop after silence" — restart silently
         if (event.error === "no-speech" && withinMicSession()) {
-            try { recognition.start(); } catch(e) {} return;
+            safeRestart("no-speech"); return;
         }
         if (silenceTimer) clearTimeout(silenceTimer);
         if (event.error === "not-allowed") setStatus("Mic access denied.");
@@ -1014,12 +1042,11 @@ function initSpeechRecognition() {
         }
         // CRITICAL: Don't auto-send on browser-induced onend. The browser auto-stops
         // recognition after ~1-3s of silence which would fire sendMessage instantly,
-        // overriding our 5s silence timer. Instead, silently restart recognition.
+        // overriding our silence timer. Instead, silently restart recognition.
         // The silence timer (set in onresult) survives across restarts and fires
-        // ONLY after 5 real seconds with no new speech. That timer is what sends.
+        // ONLY after the full silence window with no new speech. That timer is what sends.
         if (withinMicSession()) {
-            try { recognition.start(); } catch(e) {}
-            return;
+            safeRestart("onend"); return;
         }
         // Mic session ended — if transcript pending (unlikely with timer in place),
         // send it; otherwise close cleanly.
@@ -1046,7 +1073,21 @@ function startRecording() {
     if (currentMode !== "dictate") fullTranscript = "";
     manualStop = false;
     micSessionStart = Date.now();  // start the 5-min window
-    try { recognition.start(); } catch(e) { console.warn(e); }
+    try {
+        recognition.start();
+    } catch (e) {
+        // If a previous session is still tearing down, retry after a tick
+        setTimeout(() => {
+            try { recognition.start(); }
+            catch (e2) {
+                console.warn("[mic] start failed after retry:", e2);
+                isRecording = false;
+                micSessionStart = null;
+                document.getElementById("micBtn").classList.remove("recording");
+                setStatus("Mic unavailable — tap to retry");
+            }
+        }, 80);
+    }
 }
 function stopRecording() {
     if (!isRecording) return;
