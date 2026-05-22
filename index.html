@@ -164,6 +164,33 @@
             font-size: 11px; color: var(--text-dimmer);
             margin-top: 4px; display: flex; gap: 10px;
         }
+        .chat-card .actions {
+            display: flex; gap: 4px; margin-top: 8px;
+            justify-content: flex-end;
+        }
+        .chat-card .card-btn {
+            background: transparent; border: 1px solid #333;
+            color: var(--text-dimmer); border-radius: 8px;
+            padding: 5px 10px; font-size: 11px; cursor: pointer;
+        }
+        .chat-card .card-btn:hover { border-color: var(--gold); color: var(--gold); }
+        .chat-card .card-btn.danger:hover { border-color: var(--danger); color: var(--danger); }
+
+        /* Filter pills above chat list */
+        .list-filter {
+            display: flex; gap: 6px; padding: 10px 12px 4px;
+            border-bottom: 1px solid #1f1f1f;
+            background: var(--bg-2);
+        }
+        .list-filter button {
+            background: transparent; border: 1px solid #333;
+            color: var(--text-dim); border-radius: 999px;
+            padding: 5px 12px; font-size: 12px; cursor: pointer;
+        }
+        .list-filter button.active {
+            background: var(--gold-soft); border-color: var(--gold); color: var(--gold);
+            font-weight: 600;
+        }
         .empty-state {
             text-align: center; padding: 60px 20px;
             color: var(--text-dimmer); font-size: 14px;
@@ -416,6 +443,10 @@
 
 <!-- Chat List view -->
 <div id="listView" class="view">
+    <div class="list-filter">
+        <button class="active" data-filter="active">Active</button>
+        <button data-filter="archived">Archived</button>
+    </div>
     <div class="list-scroll" id="listScroll">
         <div class="empty-state" id="emptyList" hidden>
             <h2>Welcome.</h2>
@@ -527,6 +558,7 @@ let currentModel = "gemma4-talk";
 let currentMode = "talk";
 let analysisModel = "gemma4-companion";  // E4B by default in Analysis; can flip to gemma4-deep
 let conversationsList = [];
+let listFilter = "active";  // "active" or "archived"
 let isProcessing = false;
 let isRecording = false;
 let recognition = null;
@@ -584,7 +616,8 @@ document.getElementById("backBtn").addEventListener("click", () => {
 // ── Conversations List ─────────────────────────────────────────────────
 async function loadConversationsList() {
     try {
-        const r = await apiCall("/api/conversations");
+        const q = listFilter === "archived" ? "?archived=1" : "";
+        const r = await apiCall("/api/conversations" + q);
         const d = await r.json();
         conversationsList = d.conversations || [];
         renderList();
@@ -594,17 +627,24 @@ async function loadConversationsList() {
 function renderList() {
     const scroll = document.getElementById("listScroll");
     const empty = document.getElementById("emptyList");
+    scroll.innerHTML = "";
     if (!conversationsList.length) {
-        scroll.querySelectorAll(".chat-card").forEach(c => c.remove());
+        scroll.appendChild(empty);
         empty.hidden = false;
+        // Tweak empty state text per filter
+        if (listFilter === "archived") {
+            empty.innerHTML = '<h2>No archived chats</h2><p style="margin-top:8px;">Chats you archive will land here.</p>';
+        } else {
+            empty.innerHTML = '<h2>Welcome.</h2><p>Tap <strong>+ New Chat</strong> to start.</p><p style="margin-top: 16px; font-size: 12px;">Atlas remembers everything from past conversations.</p>';
+        }
         return;
     }
     empty.hidden = true;
-    scroll.innerHTML = "";
     for (const c of conversationsList) {
         const card = document.createElement("div");
         card.className = "chat-card";
         const date = formatRelDate(c.updated_at);
+        const isArchived = listFilter === "archived";
         card.innerHTML = `
             <div class="row1">
                 <div class="title">${escapeHtml(c.title || "New chat")}</div>
@@ -612,11 +652,52 @@ function renderList() {
             </div>
             <div class="preview">${escapeHtml((c.preview || "").substring(0, 200))}</div>
             <div class="meta">${c.message_count || 0} messages · ${escapeHtml(c.model || "")}</div>
+            <div class="actions">
+                <button class="card-btn" data-act="${isArchived ? 'unarchive' : 'archive'}" data-id="${c.id}">
+                    ${isArchived ? '↩ Unarchive' : '📥 Archive'}
+                </button>
+                <button class="card-btn danger" data-act="delete" data-id="${c.id}">Delete</button>
+            </div>
         `;
-        card.addEventListener("click", () => openConversation(c.id));
+        // Open chat when tapping the body (but not the action buttons)
+        card.addEventListener("click", (e) => {
+            if (e.target.closest(".actions")) return;
+            openConversation(c.id);
+        });
+        // Wire action buttons
+        card.querySelectorAll(".card-btn").forEach(btn => {
+            btn.addEventListener("click", async (e) => {
+                e.stopPropagation();
+                const act = btn.dataset.act;
+                const id = btn.dataset.id;
+                if (act === "archive" || act === "unarchive") {
+                    await apiCall("/api/conversation/" + encodeURIComponent(id) + "/archive", {
+                        method: "PUT",
+                        headers: {"Content-Type": "application/json"},
+                        body: JSON.stringify(act === "unarchive" ? {unarchive: true} : {}),
+                    });
+                    await loadConversationsList();
+                } else if (act === "delete") {
+                    if (!confirm("Delete this conversation? This can't be undone.")) return;
+                    await apiCall("/api/conversation/" + encodeURIComponent(id), {method: "DELETE"});
+                    await loadConversationsList();
+                }
+            });
+        });
         scroll.appendChild(card);
     }
 }
+
+// Wire filter pills
+document.querySelectorAll(".list-filter button").forEach(b => {
+    b.addEventListener("click", () => {
+        listFilter = b.dataset.filter;
+        document.querySelectorAll(".list-filter button").forEach(x => {
+            x.classList.toggle("active", x.dataset.filter === listFilter);
+        });
+        loadConversationsList();
+    });
+});
 
 function formatRelDate(iso) {
     if (!iso) return "";
