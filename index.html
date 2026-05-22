@@ -447,13 +447,7 @@
         <button class="active" data-filter="active">Active</button>
         <button data-filter="archived">Archived</button>
     </div>
-    <div class="list-scroll" id="listScroll">
-        <div class="empty-state" id="emptyList" hidden>
-            <h2>Welcome.</h2>
-            <p>Tap <strong>+ New Chat</strong> to start.</p>
-            <p style="margin-top: 16px; font-size: 12px;">Atlas remembers everything from past conversations.</p>
-        </div>
-    </div>
+    <div class="list-scroll" id="listScroll"></div>
     <button id="newChatFab" class="fab">+ New Chat</button>
 </div>
 
@@ -626,20 +620,19 @@ async function loadConversationsList() {
 
 function renderList() {
     const scroll = document.getElementById("listScroll");
-    const empty = document.getElementById("emptyList");
     scroll.innerHTML = "";
     if (!conversationsList.length) {
-        scroll.appendChild(empty);
-        empty.hidden = false;
-        // Tweak empty state text per filter
+        const empty = document.createElement("div");
+        empty.className = "empty-state";
+        empty.id = "emptyList";
         if (listFilter === "archived") {
             empty.innerHTML = '<h2>No archived chats</h2><p style="margin-top:8px;">Chats you archive will land here.</p>';
         } else {
             empty.innerHTML = '<h2>Welcome.</h2><p>Tap <strong>+ New Chat</strong> to start.</p><p style="margin-top: 16px; font-size: 12px;">Atlas remembers everything from past conversations.</p>';
         }
+        scroll.appendChild(empty);
         return;
     }
-    empty.hidden = true;
     for (const c of conversationsList) {
         const card = document.createElement("div");
         card.className = "chat-card";
