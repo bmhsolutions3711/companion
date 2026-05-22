@@ -959,11 +959,18 @@ function initSpeechRecognition() {
         setStatus("Heard: " + fullTranscript.substring(0, 80) + (fullTranscript.length > 80 ? "..." : ""));
         if (silenceTimer) clearTimeout(silenceTimer);
         if (currentMode !== "dictate") {
+            // 5 sec silence after any speech → send. Survives recognition auto-restarts
+            // because the timer ID lives outside recognition's lifecycle.
             silenceTimer = setTimeout(() => {
                 if (fullTranscript.trim()) {
-                    stopRecording();
+                    manualStop = true;        // prevent onend from auto-restarting
+                    try { recognition.stop(); } catch(e) {}
                     const pending = fullTranscript.trim();
                     fullTranscript = "";
+                    isRecording = false;
+                    micSessionStart = null;
+                    document.getElementById("micBtn").classList.remove("recording");
+                    setStatus("Sending...");
                     if (currentMode === "coach") coachHandleTranscript(pending);
                     else sendMessage(pending);
                 }
@@ -1005,8 +1012,18 @@ function initSpeechRecognition() {
             }
             return;
         }
-        // If we have a transcript, the user spoke — send it (post-speech path).
-        if (fullTranscript.trim() && isRecording) {
+        // CRITICAL: Don't auto-send on browser-induced onend. The browser auto-stops
+        // recognition after ~1-3s of silence which would fire sendMessage instantly,
+        // overriding our 5s silence timer. Instead, silently restart recognition.
+        // The silence timer (set in onresult) survives across restarts and fires
+        // ONLY after 5 real seconds with no new speech. That timer is what sends.
+        if (withinMicSession()) {
+            try { recognition.start(); } catch(e) {}
+            return;
+        }
+        // Mic session ended — if transcript pending (unlikely with timer in place),
+        // send it; otherwise close cleanly.
+        if (fullTranscript.trim()) {
             if (silenceTimer) clearTimeout(silenceTimer);
             const pending = fullTranscript.trim();
             fullTranscript = "";
@@ -1017,13 +1034,6 @@ function initSpeechRecognition() {
             else sendMessage(pending);
             return;
         }
-        // No transcript yet — if we're still within the 5-min mic-open window,
-        // restart recognition so Bryan has time to think before talking.
-        if (withinMicSession()) {
-            try { recognition.start(); } catch(e) {}
-            return;
-        }
-        // Otherwise close cleanly
         isRecording = false;
         micSessionStart = null;
         document.getElementById("micBtn").classList.remove("recording");
