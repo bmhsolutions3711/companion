@@ -841,9 +841,25 @@ function escapeHtml(text) {
 }
 function setStatus(t) { document.getElementById("status").textContent = t; }
 
+// ── STT mishearing fixups (Bryan mumbles, Chrome hears "Alice", etc.) ──
+// Edit this list as new mishearings surface in real use.
+const STT_FIXUPS = [
+    { pattern: /\bAlice\b/gi,   replace: "Atlas" },
+    { pattern: /\bAt\s+less\b/gi, replace: "Atlas" },
+    { pattern: /\batless\b/gi,  replace: "Atlas" },
+    { pattern: /\badlas\b/gi,   replace: "Atlas" },
+];
+function fixSttMishearings(text) {
+    if (!text) return text;
+    let out = text;
+    for (const f of STT_FIXUPS) out = out.replace(f.pattern, f.replace);
+    return out;
+}
+
 // ── Send message ───────────────────────────────────────────────────────
 async function sendMessage(text) {
     if (!text.trim() || isProcessing) return;
+    text = fixSttMishearings(text);
     if (currentMode === "dictate") { saveDictation(text.trim()); return; }
     if (!sessionId) await newConversation();
 
