@@ -1,5 +1,5 @@
 // Atlas PWA shell — network-first SW. Backend API calls bypass cache.
-const CACHE_NAME = "atlas-shell-v22";
+const CACHE_NAME = "atlas-shell-v23";
 const SHELL = [
   "./",
   "./index.html",
@@ -40,5 +40,41 @@ self.addEventListener("fetch", (e) => {
         return resp;
       })
       .catch(() => caches.match(e.request).then((m) => m || caches.match("./")))
+  );
+});
+
+// ── Web Push: display incoming reminders ─────────────────────────────────
+self.addEventListener("push", (event) => {
+  let data = {};
+  try {
+    data = event.data ? event.data.json() : {};
+  } catch (e) {
+    data = { title: "Atlas", body: event.data ? event.data.text() : "" };
+  }
+  const title = data.title || "Atlas";
+  const options = {
+    body: data.body || "",
+    icon: data.icon || "./static/companion-icon-192.png",
+    badge: data.badge || "./static/companion-icon-192.png",
+    tag: data.tag || "atlas",
+    requireInteraction: !!data.requireInteraction,
+    data: { url: data.url || "./" },
+  };
+  event.waitUntil(self.registration.showNotification(title, options));
+});
+
+// ── Notification tap: focus or open the Atlas PWA ────────────────────────
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const url = (event.notification.data && event.notification.data.url) || "./";
+  event.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {
+      for (const c of clients) {
+        if (c.url.includes(self.registration.scope) && "focus" in c) {
+          return c.focus();
+        }
+      }
+      if (self.clients.openWindow) return self.clients.openWindow(url);
+    })
   );
 });

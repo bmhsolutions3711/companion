@@ -1431,13 +1431,98 @@ document.getElementById("reviewSendBtn").addEventListener("click", async () => {
 });
 
 // ── Settings (lightweight modal) ───────────────────────────────────────
-document.getElementById("settingsBtn").addEventListener("click", () => {
-    if (confirm("Disconnect and re-enter backend URL + token?")) {
-        localStorage.removeItem("companion_backend_url");
-        localStorage.removeItem("companion_token");
-        location.reload();
+document.getElementById("settingsBtn").addEventListener("click", async () => {
+    const pushStatus = await getPushStatus();
+    const pushLabel = pushStatus.subscribed
+        ? "Disable reminders (push notifications)"
+        : "Enable reminders (bill due, stale tasks)";
+    const choice = prompt(
+        "Atlas settings:\n" +
+        "1. " + pushLabel + "\n" +
+        "2. Send test notification\n" +
+        "3. Disconnect / re-enter token\n" +
+        "\nEnter 1, 2, or 3:"
+    );
+    if (choice === "1") {
+        if (pushStatus.subscribed) await unsubscribePush();
+        else await subscribePush();
+    } else if (choice === "2") {
+        const r = await apiCall("/api/push/test", { method: "POST" });
+        const d = await r.json();
+        alert(`Sent: ${d.sent || 0}\nErrors: ${(d.errors || []).length}`);
+    } else if (choice === "3") {
+        if (confirm("Disconnect and re-enter backend URL + token?")) {
+            localStorage.removeItem("companion_backend_url");
+            localStorage.removeItem("companion_token");
+            location.reload();
+        }
     }
 });
+
+// ── Web Push subscription ──────────────────────────────────────────────
+function urlB64ToUint8(b64) {
+    const padding = "=".repeat((4 - (b64.length % 4)) % 4);
+    const base64 = (b64 + padding).replace(/-/g, "+").replace(/_/g, "/");
+    const raw = atob(base64);
+    return Uint8Array.from([...raw].map(c => c.charCodeAt(0)));
+}
+
+async function getPushStatus() {
+    if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+        return { supported: false, subscribed: false };
+    }
+    try {
+        const reg = await navigator.serviceWorker.ready;
+        const sub = await reg.pushManager.getSubscription();
+        return { supported: true, subscribed: !!sub };
+    } catch (e) {
+        return { supported: true, subscribed: false, error: e.message };
+    }
+}
+
+async function subscribePush() {
+    try {
+        const perm = await Notification.requestPermission();
+        if (perm !== "granted") {
+            alert("Notification permission denied. Enable in Chrome site settings.");
+            return;
+        }
+        const keyRes = await apiCall("/api/push/public-key");
+        const { public_key } = await keyRes.json();
+        if (!public_key) {
+            alert("Backend has no VAPID public key configured.");
+            return;
+        }
+        const reg = await navigator.serviceWorker.ready;
+        const sub = await reg.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: urlB64ToUint8(public_key),
+        });
+        const label = navigator.userAgent.includes("Android") ? "Android phone" :
+                      navigator.userAgent.includes("iPhone") ? "iPhone" :
+                      "Desktop";
+        const r = await apiCall("/api/push/subscribe", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ subscription: sub.toJSON(), label }),
+        });
+        if (r.ok) alert("Reminders enabled. You'll get push notifications for bills due and stale tasks.");
+        else alert("Subscribe failed: " + r.status);
+    } catch (e) {
+        alert("Subscribe error: " + e.message);
+    }
+}
+
+async function unsubscribePush() {
+    try {
+        const reg = await navigator.serviceWorker.ready;
+        const sub = await reg.pushManager.getSubscription();
+        if (sub) await sub.unsubscribe();
+        alert("Reminders disabled on this device.");
+    } catch (e) {
+        alert("Unsubscribe error: " + e.message);
+    }
+}
 
 // ── Init ───────────────────────────────────────────────────────────────
 async function init() {
@@ -1458,7 +1543,7 @@ document.getElementById("setupToken").addEventListener("keydown", (e) => {
 
 // Service worker
 if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("./sw.js?v=8").catch(e => console.warn(e));
+    navigator.serviceWorker.register("./sw.js?v=23").catch(e => console.warn(e));
 }
 
 (async () => {
