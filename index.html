@@ -475,7 +475,7 @@
 <header class="topbar">
     <button id="backBtn" class="icon-btn" hidden title="Back to chats">‹</button>
     <div class="title" id="topTitle">Chats</div>
-    <span id="buildPill" style="font-size:9px;color:#6b7280;font-family:ui-monospace,monospace;padding:2px 6px;border:1px solid #333;border-radius:6px;">v26</span>
+    <span id="buildPill" style="font-size:9px;color:#6b7280;font-family:ui-monospace,monospace;padding:2px 6px;border:1px solid #333;border-radius:6px;">v27</span>
     <button id="notifBtn" class="icon-btn has-badge" title="Notifications">
         <span>🔔</span>
         <span class="badge" id="notifBadge" hidden>0</span>
@@ -643,6 +643,10 @@ let coachActive = false;
 let coachCurrentPrompt = null;
 let coachSessionId = null;
 let coachSource = "brain_dump";
+// New (2026-05-28): defer logging until Bryan confirms "next" so a silence-cut
+// mid-thought doesn't fragment one answer into two training pairs.
+let coachPendingAnswer = "";
+let coachAwaitingConfirm = false;
 
 // Review state
 let reviewSelections = new Set();
@@ -1288,15 +1292,17 @@ async function startRecordingWhisper() {
     setStatus("Listening...");
 
     // Silence detection — RMS on time-domain audio, threshold tuned for phone mics.
-    // Auto-stop after 1.5s of continuous silence OR 60s hard cap.
+    // Coach + Dictate are "thinking modes" — give longer grace and silence windows
+    // so Bryan can pause mid-thought without the recorder committing early.
     const buf = new Uint8Array(analyser.fftSize);
     let silentSince = null;
     let hasSpokenYet = false;
-    const SILENCE_MS = 1500;
+    const isThinkingMode = (currentMode === "coach" || currentMode === "dictate");
+    const SILENCE_MS = isThinkingMode ? 3000 : 1500;
     const SILENCE_THRESHOLD = 6;     // RMS deviation from 128 (silent baseline)
     const SPEECH_THRESHOLD = 8;      // higher — gates "started speaking"
-    const MAX_RECORD_MS = 60000;
-    const PRE_SPEECH_GRACE_MS = 8000; // give user 8s to start talking before timing out
+    const MAX_RECORD_MS = isThinkingMode ? 120000 : 60000;  // Coach answers can be long
+    const PRE_SPEECH_GRACE_MS = isThinkingMode ? 20000 : 8000; // 20s think-time for Coach
 
     silenceCheckInterval = setInterval(() => {
         if (!mediaRecorder || mediaRecorder.state !== "recording") return;
@@ -1461,6 +1467,8 @@ function coachStart() {
 function coachStop() {
     coachActive = false;
     coachCurrentPrompt = null;
+    coachPendingAnswer = "";
+    coachAwaitingConfirm = false;
     if (ttsAudio) { ttsAudio.pause(); ttsAudio = null; }
     isSpeaking = false;
     window.speechSynthesis.cancel();
@@ -1484,13 +1492,109 @@ async function coachFetchAndPlayNext() {
         addSystemMessage("Coach fetch failed: " + e.message); coachStop();
     }
 }
+// Confirmation phrases — short, must start the utterance.
+function _coachIsYes(cmd) {
+    const startsWith = (w) => cmd === w || cmd.startsWith(w + " ");
+    return startsWith("yes") || startsWith("yeah") || startsWith("yep") || startsWith("ya")
+        || startsWith("next") || startsWith("ready") || startsWith("continue")
+        || startsWith("ok") || startsWith("okay") || startsWith("go")
+        || cmd === "sure" || cmd === "lets go" || cmd === "let's go" || cmd === "move on";
+}
+function _coachIsNo(cmd) {
+    const startsWith = (w) => cmd === w || cmd.startsWith(w + " ");
+    return startsWith("no") || startsWith("nope") || startsWith("wait")
+        || startsWith("hold on") || startsWith("actually") || startsWith("hang on")
+        || cmd === "not yet" || cmd === "more" || cmd === "give me a sec";
+}
+
+async function _coachLogPending() {
+    if (!coachPendingAnswer || !coachCurrentPrompt) return;
+    try {
+        const r = await apiCall("/api/voice-prompt/log", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({prompt_id: coachCurrentPrompt.prompt_id,
+                                 transcript: coachPendingAnswer, session_id: coachSessionId}),
+        });
+        const data = await r.json();
+        if (data.logged) addSystemMessage(`✓ Logged → pair ${data.pair_id}`);
+        else addSystemMessage(`⚠ ${data.status || "log returned no pair_id"}`);
+        return data;
+    } catch (e) {
+        addSystemMessage("Coach log failed: " + e.message);
+        return null;
+    }
+}
+
+// Brief Talk-style acknowledgement + "Ready for the next one?".
+// Uses /api/chat in Talk mode with a tight one-sentence instruction.
+// Falls back to hardcoded ack if the model call fails.
+async function _coachAckAndAsk(latestText) {
+    const tail = "Ready for the next one?";
+    let ack = "Got it.";
+    try {
+        const instruction = `Bryan is in Coach mode. He just answered the prompt "${coachCurrentPrompt.text}" with: "${latestText}". Respond in ONE short sentence that shows you heard him. Do NOT ask a follow-up question. Do NOT say "next" or "ready" — I'll add that part myself.`;
+        const r = await apiCall("/api/chat", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({
+                message: instruction,
+                model: "gemma4-talk",
+                session: coachSessionId + "_ack",
+                transient: true,  // one-shot ack — don't persist to DB or pollute chat list
+            }),
+        });
+        if (r.ok) {
+            const data = await r.json();
+            const reply = (data.response || "").trim();
+            // Keep ack short — if model rambled, take only the first sentence
+            if (reply) {
+                const firstSent = reply.split(/(?<=[.!?])\s+/)[0];
+                ack = firstSent.length > 0 && firstSent.length < 200 ? firstSent : reply.slice(0, 180);
+            }
+        }
+    } catch (e) {
+        console.warn("[coach] ack failed, using fallback:", e);
+    }
+    const full = `${ack} ${tail}`;
+    addMessage("assistant", full);
+    coachAwaitingConfirm = true;
+    speak(full, () => { if (coachActive) startRecording(); });
+}
+
 async function coachHandleTranscript(transcript) {
     if (!coachActive || !coachCurrentPrompt) return;
     const text = (transcript || "").trim();
-    const cmd = text.toLowerCase().replace(/[.!?,]+$/, "");
-    if (text.length < 25) {
-        if (cmd === "stop" || cmd === "exit") { addSystemMessage("Coach: stopping."); coachStop(); return; }
-        if (cmd === "skip" || cmd === "next" || cmd === "pass") {
+    if (!text) {
+        // Silence with nothing said — re-prompt
+        if (coachAwaitingConfirm) {
+            speak("Ready for the next one?", () => { if (coachActive) startRecording(); });
+        } else if (coachActive) {
+            startRecording();
+        }
+        return;
+    }
+    const cmd = text.toLowerCase().replace(/[.!?,]+/g, "").trim();
+    const wordCount = cmd.split(/\s+/).filter(Boolean).length;
+    const startsWith = (w) => cmd === w || cmd.startsWith(w + " ");
+
+    // ── Voice commands (work in either state) ──
+    if (text.length < 30 && wordCount <= 4) {
+        const isStopPhrase = startsWith("stop") || startsWith("exit") || startsWith("quit")
+            || cmd === "done" || cmd === "im done" || cmd === "i'm done"
+            || cmd === "all done" || cmd === "thats it" || cmd === "that's it";
+        if (isStopPhrase) {
+            // Save anything pending before quitting so work isn't lost
+            if (coachPendingAnswer) await _coachLogPending();
+            addSystemMessage("Coach: stopping.");
+            coachStop(); return;
+        }
+        const isSkipPhrase = startsWith("skip") || startsWith("pass") || cmd === "skip this"
+            || cmd === "skip this one" || cmd === "skip it";
+        if (isSkipPhrase) {
+            // Discard any pending answer for this prompt — skip means abandon
+            coachPendingAnswer = "";
+            coachAwaitingConfirm = false;
             addSystemMessage(`Skipped ${coachCurrentPrompt.prompt_id}.`);
             try {
                 await apiCall("/api/voice-prompt/skip", {
@@ -1504,25 +1608,47 @@ async function coachHandleTranscript(transcript) {
             return;
         }
     }
+
+    // ── Awaiting "Ready for the next one?" confirmation ──
+    if (coachAwaitingConfirm) {
+        // YES path — commit the accumulated answer and move on
+        if (text.length < 30 && wordCount <= 4 && _coachIsYes(cmd)) {
+            const logResult = await _coachLogPending();
+            coachPendingAnswer = "";
+            coachAwaitingConfirm = false;
+            // The log response already includes the next prompt — use it if present,
+            // otherwise fall through to fetch.
+            if (logResult && logResult.next) {
+                coachCurrentPrompt = logResult.next;
+                const np = logResult.next;
+                const intro = `${np.prompt_id} (${np.arc}${np.phase ? ", " + np.phase : ""}) — ${np.queue_remaining} remaining`;
+                addMessage("assistant", `${intro}\n\n${np.text}`);
+                speak(np.text, () => { if (coachActive) startRecording(); });
+            } else {
+                coachCurrentPrompt = null;
+                coachFetchAndPlayNext();
+            }
+            return;
+        }
+        // NO / WAIT path — re-open the mic for more on the same prompt
+        if (text.length < 30 && wordCount <= 4 && _coachIsNo(cmd)) {
+            coachAwaitingConfirm = false;
+            addSystemMessage("Coach: take your time.");
+            speak("Go ahead.", () => { if (coachActive) startRecording(); });
+            return;
+        }
+        // Anything else substantive — treat as additional answer, append + re-ack
+        addMessage("user", text);
+        coachPendingAnswer = (coachPendingAnswer + " " + text).trim();
+        coachAwaitingConfirm = false;
+        await _coachAckAndAsk(text);
+        return;
+    }
+
+    // ── Fresh answer to current prompt ──
     addMessage("user", text);
-    try {
-        const r = await apiCall("/api/voice-prompt/log", {
-            method: "POST",
-            headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({prompt_id: coachCurrentPrompt.prompt_id,
-                                 transcript: text, session_id: coachSessionId}),
-        });
-        const data = await r.json();
-        if (data.logged) addSystemMessage(`✓ Logged → pair ${data.pair_id}`);
-        else addSystemMessage(`⚠ ${data.status}`);
-        coachCurrentPrompt = data.next || null;
-        if (!coachActive) return;
-        if (!data.next) { addSystemMessage("Coach: done."); coachStop(); return; }
-        const np = data.next;
-        const intro = `${np.prompt_id} (${np.arc}${np.phase ? ", " + np.phase : ""}) — ${np.queue_remaining} remaining`;
-        addMessage("assistant", `${intro}\n\n${np.text}`);
-        speak(np.text, () => { if (coachActive) startRecording(); });
-    } catch (e) { addSystemMessage("Coach log failed."); coachStop(); }
+    coachPendingAnswer = (coachPendingAnswer + " " + text).trim();
+    await _coachAckAndAsk(text);
 }
 
 // ── Memory drawer ──────────────────────────────────────────────────────
