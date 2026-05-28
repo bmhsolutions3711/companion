@@ -494,6 +494,7 @@
         <span class="badge" id="memoryBadge" hidden>0</span>
     </button>
     <button id="reviewBtn" class="icon-btn" title="Review">✓</button>
+    <button id="debriefBtn" class="icon-btn" title="End-of-day debrief">🌙</button>
     <button id="settingsBtn" class="icon-btn" title="Settings">⚙</button>
 </header>
 
@@ -1772,6 +1773,37 @@ async function updateReviewSticky() {
     }
 }
 document.getElementById("reviewBtn").addEventListener("click", openReviewView);
+
+// ── End-of-day Debrief ─────────────────────────────────────────────────
+// Tap 🌙 → POST /api/debrief (server pulls Bryan's kanban/tasks/finance state)
+// → server returns response + creates a session → open that conversation in the
+// chat view → speak it via TTS so he can listen while wrapping up.
+document.getElementById("debriefBtn").addEventListener("click", async () => {
+    if (!backendUrl || !companionToken) return;
+    if (isProcessing) return;
+    isProcessing = true;
+    setStatus("Building today's debrief…");
+    try {
+        const resp = await apiCall("/api/debrief", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({}),
+        });
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        const data = await resp.json();
+        if (data.error) throw new Error(data.error);
+        // Server created the session — open it
+        await openConversation(data.session);
+        setStatus("Debrief ready");
+        // Read it out loud — debrief is an end-of-day audio moment
+        if (data.response) speak(data.response);
+    } catch (e) {
+        console.warn("[debrief] failed:", e);
+        setStatus("Debrief failed: " + (e.message || "unknown"));
+    } finally {
+        isProcessing = false;
+    }
+});
 
 // ── Notifications view ─────────────────────────────────────────────────
 async function openNotificationsView() {
