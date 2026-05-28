@@ -298,9 +298,18 @@
         .mic-btn.recording {
             background: var(--danger); animation: pulse 1.2s infinite;
         }
+        .mic-btn.transcribing {
+            background: var(--gold); animation: spin 1s linear infinite;
+            color: rgba(0,0,0,0.4);
+        }
         @keyframes pulse {
             0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.6); }
             50% { box-shadow: 0 0 0 12px rgba(239, 68, 68, 0); }
+        }
+        @keyframes spin {
+            0% { box-shadow: 0 0 0 0 rgba(212, 175, 55, 0.7); }
+            50% { box-shadow: 0 0 0 8px rgba(212, 175, 55, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(212, 175, 55, 0); }
         }
         .text-input {
             flex: 1; background: var(--bg); border: 1px solid #333;
@@ -475,7 +484,7 @@
 <header class="topbar">
     <button id="backBtn" class="icon-btn" hidden title="Back to chats">‹</button>
     <div class="title" id="topTitle">Chats</div>
-    <span id="buildPill" style="font-size:9px;color:#6b7280;font-family:ui-monospace,monospace;padding:2px 6px;border:1px solid #333;border-radius:6px;">v27</span>
+    <span id="buildPill" style="font-size:9px;color:#6b7280;font-family:ui-monospace,monospace;padding:2px 6px;border:1px solid #333;border-radius:6px;">…</span>
     <button id="notifBtn" class="icon-btn has-badge" title="Notifications">
         <span>🔔</span>
         <span class="badge" id="notifBadge" hidden>0</span>
@@ -1240,7 +1249,8 @@ async function startRecordingWhisper() {
         if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
         if (audioCtx) { try { audioCtx.close(); } catch(_) {} audioCtx = null; }
         analyser = null;
-        document.getElementById("micBtn").classList.remove("recording");
+        const micEl = document.getElementById("micBtn");
+        micEl.classList.remove("recording");
 
         const blob = chunks.length ? new Blob(chunks, {type: mediaRecorder.mimeType || mimeType || "audio/webm"}) : null;
         const recordedMs = micWhisperStart ? Date.now() - micWhisperStart : 0;
@@ -1254,6 +1264,8 @@ async function startRecordingWhisper() {
             return;
         }
 
+        // Show transcribing spinner so user knows the silent stop registered
+        micEl.classList.add("transcribing");
         setStatus("Transcribing...");
         try {
             const resp = await apiCall("/api/transcribe", {
@@ -1264,6 +1276,7 @@ async function startRecordingWhisper() {
             if (!resp.ok) throw new Error("HTTP " + resp.status);
             const data = await resp.json();
             const text = (data.text || "").trim();
+            micEl.classList.remove("transcribing");
             isRecording = false;
             whisperFailCount = 0;
             if (!text) {
@@ -1274,6 +1287,7 @@ async function startRecordingWhisper() {
             _routeTranscript(text);
         } catch (e) {
             console.warn("[whisper] transcribe failed:", e);
+            micEl.classList.remove("transcribing");
             whisperFailCount++;
             isRecording = false;
             setStatus("Transcribe failed — tap to retry");
@@ -2053,9 +2067,26 @@ document.getElementById("setupToken").addEventListener("keydown", (e) => {
     if (e.key === "Enter") setupConnect();
 });
 
-// Service worker
+// Service worker + build pill auto-sync.
+// sw.js's CACHE_NAME is the single source of truth — bump it, the pill follows.
+// No more "did I remember to bump the pill?" drift across files.
 if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("./sw.js?v=24").catch(e => console.warn(e));
+    fetch("./sw.js?_=" + Date.now(), {cache: "no-store"})
+        .then(r => r.text())
+        .then(t => {
+            const m = t.match(/CACHE_NAME\s*=\s*["']([^"']+)["']/);
+            const ver = (m && m[1].match(/v\d+/i)) ? m[1].match(/v\d+/i)[0] : null;
+            if (ver) {
+                const pill = document.getElementById("buildPill")
+                          || document.querySelector(".build-pill");
+                if (pill) pill.textContent = ver;
+                // Register with the same version so SW also busts on bump
+                navigator.serviceWorker.register("./sw.js?" + ver).catch(e => console.warn(e));
+            } else {
+                navigator.serviceWorker.register("./sw.js").catch(e => console.warn(e));
+            }
+        })
+        .catch(() => navigator.serviceWorker.register("./sw.js").catch(e => console.warn(e)));
 }
 
 (async () => {
