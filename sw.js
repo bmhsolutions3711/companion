@@ -1,5 +1,5 @@
 // Atlas PWA shell — network-first SW. Backend API calls bypass cache.
-const CACHE_NAME = "atlas-shell-v24";
+const CACHE_NAME = "atlas-shell-v25";
 const SHELL = [
   "./",
   "./index.html",

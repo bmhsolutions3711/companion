@@ -475,7 +475,7 @@
 <header class="topbar">
     <button id="backBtn" class="icon-btn" hidden title="Back to chats">‹</button>
     <div class="title" id="topTitle">Chats</div>
-    <span id="buildPill" style="font-size:9px;color:#6b7280;font-family:ui-monospace,monospace;padding:2px 6px;border:1px solid #333;border-radius:6px;">v24</span>
+    <span id="buildPill" style="font-size:9px;color:#6b7280;font-family:ui-monospace,monospace;padding:2px 6px;border:1px solid #333;border-radius:6px;">v25</span>
     <button id="notifBtn" class="icon-btn has-badge" title="Notifications">
         <span>🔔</span>
         <span class="badge" id="notifBadge" hidden>0</span>
@@ -620,6 +620,7 @@ let manualStop = false;
 let ttsAudio = null;
 let isSpeaking = false;
 let micSessionStart = null;   // ms timestamp; survives recognition auto-restarts within one session
+let micHeartbeat = null;      // setInterval — force-restarts recognition if it dies mid-session (mobile Chrome drops it)
 
 // Dictate state
 let dictateAccumulator = "";
@@ -1004,7 +1005,7 @@ function initSpeechRecognition() {
     //    continues talking, transcript accumulates and timer resets. If he
     //    truly stops for 5s, message sends.
     //  - Tap mic anytime to manually stop and send.
-    const MAX_OPEN_MIC_MS = 5 * 60 * 1000;
+    const MAX_OPEN_MIC_MS = 2 * 60 * 1000;
     const LONG_TRANSCRIPT_WORDS = 50;
     const LONG_TRANSCRIPT_GRACE_MS = 5000;
 
@@ -1148,6 +1149,29 @@ function startRecording() {
     if (currentMode !== "dictate") fullTranscript = "";
     manualStop = false;
     micSessionStart = Date.now();  // start the 5-min window
+    // Heartbeat: mobile Chrome silently drops recognition during silence.
+    // Poll every 3s — if recognition died but session is still active, force-restart.
+    if (micHeartbeat) clearInterval(micHeartbeat);
+    micHeartbeat = setInterval(() => {
+        if (!micSessionStart || manualStop || isProcessing) {
+            clearInterval(micHeartbeat); micHeartbeat = null; return;
+        }
+        if (Date.now() - micSessionStart > MAX_OPEN_MIC_MS) {
+            clearInterval(micHeartbeat); micHeartbeat = null;
+            stopRecording(); return;
+        }
+        // If not recording but session still active, Chrome dropped it — restart
+        if (!isRecording && !isProcessing && !manualStop) {
+            console.log("[mic] heartbeat: recognition died, restarting");
+            try { recognition.start(); } catch(e) {
+                setTimeout(() => {
+                    try { recognition.start(); } catch(e2) {
+                        console.warn("[mic] heartbeat restart failed:", e2);
+                    }
+                }, 100);
+            }
+        }
+    }, 3000);
     try {
         recognition.start();
     } catch (e) {
@@ -1158,6 +1182,7 @@ function startRecording() {
                 console.warn("[mic] start failed after retry:", e2);
                 isRecording = false;
                 micSessionStart = null;
+                if (micHeartbeat) { clearInterval(micHeartbeat); micHeartbeat = null; }
                 document.getElementById("micBtn").classList.remove("recording");
                 setStatus("Mic unavailable — tap to retry");
             }
@@ -1168,6 +1193,7 @@ function stopRecording() {
     if (!isRecording) return;
     manualStop = true;
     micSessionStart = null;
+    if (micHeartbeat) { clearInterval(micHeartbeat); micHeartbeat = null; }
     if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
     try { recognition.stop(); } catch(e) {}
 }
