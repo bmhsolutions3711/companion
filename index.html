@@ -1344,7 +1344,7 @@ async function startRecordingWhisper() {
     let silentSince = null;
     let hasSpokenYet = false;
     const isThinkingMode = (currentMode === "coach" || currentMode === "dictate");
-    const SILENCE_MS = isThinkingMode ? 3000 : 1500;
+    const SILENCE_MS = isThinkingMode ? 3000 : 1000; // #587: tighter endpointing (was 1500ms)
     const SILENCE_THRESHOLD = 6;     // RMS deviation from 128 (silent baseline)
     const SPEECH_THRESHOLD = 8;      // higher — gates "started speaking"
     const MAX_RECORD_MS = isThinkingMode ? 120000 : 60000;  // Coach answers can be long
@@ -1458,10 +1458,138 @@ document.getElementById("micBtn").addEventListener("click", () => {
     isRecording ? stopRecording() : startRecording();
 });
 
-// ── TTS ────────────────────────────────────────────────────────────────
+// ── TTS (#587: streaming + barge-in) ─────────────────────────────────
+// Barge-in: during TTS playback, monitor the mic for speech. If the user
+// starts talking mid-answer, kill TTS and start a new recording turn.
+let _bargeInStream = null;  // MediaStream for barge-in detection
+let _bargeInCtx = null;     // AudioContext
+let _bargeInAnalyser = null;
+let _bargeInTimer = null;
+let _ttsAborted = false;    // set by barge-in to signal sentence queue to stop
+
+function _initBargeIn() {
+    if (_bargeInCtx) return Promise.resolve();
+    return navigator.mediaDevices.getUserMedia({audio: true}).then(stream => {
+        _bargeInStream = stream;
+        _bargeInCtx = new (window.AudioContext || window.webkitAudioContext)();
+        _bargeInAnalyser = _bargeInCtx.createAnalyser();
+        _bargeInAnalyser.fftSize = 512;
+        _bargeInCtx.createMediaStreamSource(stream).connect(_bargeInAnalyser);
+    }).catch(e => { console.warn("[barge-in] mic init failed:", e); });
+}
+
+function _startBargeInWatch() {
+    if (!_bargeInAnalyser) return;
+    _ttsAborted = false;
+    const buf = new Uint8Array(_bargeInAnalyser.fftSize);
+    let speechStart = null;
+    _bargeInTimer = setInterval(() => {
+        if (!isSpeaking) { _stopBargeInWatch(); return; }
+        _bargeInAnalyser.getByteTimeDomainData(buf);
+        let sum = 0;
+        for (let i = 0; i < buf.length; i++) { const d = buf[i] - 128; sum += d * d; }
+        const rms = Math.sqrt(sum / buf.length);
+        // Threshold tuned above TTS speaker bleed — genuine speech from the user's mouth
+        // is louder than the phone's own speaker leaking into its mic.
+        if (rms > 12) {
+            if (!speechStart) speechStart = Date.now();
+            // Require 200ms sustained speech to avoid transient pops triggering barge-in
+            else if (Date.now() - speechStart > 200) {
+                console.log("[barge-in] speech detected during TTS — interrupting");
+                _ttsAborted = true;
+                if (ttsAudio) { ttsAudio.pause(); ttsAudio = null; }
+                window.speechSynthesis.cancel();
+                isSpeaking = false;
+                _stopBargeInWatch();
+                // Start recording the new turn
+                setTimeout(() => { if (!isRecording && !isProcessing) startRecording(); }, 100);
+            }
+        } else {
+            speechStart = null;
+        }
+    }, 50);
+}
+
+function _stopBargeInWatch() {
+    if (_bargeInTimer) { clearInterval(_bargeInTimer); _bargeInTimer = null; }
+}
+
 function speak(text, onDone) {
     if (ttsAudio) { ttsAudio.pause(); ttsAudio = null; }
     window.speechSynthesis.cancel();
+    _ttsAborted = false;
+    // Try streaming TTS first (sentence-by-sentence for faster first audio)
+    _speakStreaming(text, onDone).catch(() => _speakFallback(text, onDone));
+}
+
+async function _speakStreaming(text, onDone) {
+    const r = await apiCall("/api/tts-stream", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({text}),
+    });
+    const ct = r.headers.get("Content-Type") || "";
+    if (!ct.includes("event-stream")) throw new Error("not SSE");
+
+    isSpeaking = true;
+    _initBargeIn().then(() => _startBargeInWatch());
+
+    const reader = r.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    const audioQueue = [];
+    let playing = false;
+
+    async function playNext() {
+        if (_ttsAborted || !audioQueue.length) {
+            playing = false;
+            if (!audioQueue.length && !_ttsAborted) {
+                isSpeaking = false;
+                _stopBargeInWatch();
+                if (onDone) onDone();
+            }
+            return;
+        }
+        playing = true;
+        const b64 = audioQueue.shift();
+        const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+        const blob = new Blob([bytes], {type: "audio/wav"});
+        ttsAudio = new Audio(URL.createObjectURL(blob));
+        ttsAudio.onended = () => { ttsAudio = null; playNext(); };
+        ttsAudio.onerror = () => { ttsAudio = null; playNext(); };
+        ttsAudio.play();
+    }
+
+    while (true) {
+        const {done, value} = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, {stream: true});
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+        for (const line of lines) {
+            if (!line.startsWith("data: ")) continue;
+            try {
+                const evt = JSON.parse(line.slice(6));
+                if (evt.done || evt.error) continue;
+                if (evt.audio_b64) {
+                    audioQueue.push(evt.audio_b64);
+                    if (!playing && !_ttsAborted) playNext();
+                }
+            } catch (_) {}
+        }
+        if (_ttsAborted) { reader.cancel(); break; }
+    }
+    // Drain remaining queue
+    if (!playing && audioQueue.length && !_ttsAborted) playNext();
+    // If nothing was queued (empty response), clean up
+    if (!audioQueue.length && !playing) {
+        isSpeaking = false;
+        _stopBargeInWatch();
+        if (onDone) onDone();
+    }
+}
+
+function _speakFallback(text, onDone) {
     apiCall("/api/tts", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
@@ -1472,11 +1600,11 @@ function speak(text, onDone) {
             const blob = await r.blob();
             ttsAudio = new Audio(URL.createObjectURL(blob));
             isSpeaking = true;
-            ttsAudio.onended = () => { isSpeaking = false; ttsAudio = null; if (onDone) onDone(); };
-            ttsAudio.onerror = () => { isSpeaking = false; ttsAudio = null; if (onDone) onDone(); };
+            _initBargeIn().then(() => _startBargeInWatch());
+            ttsAudio.onended = () => { isSpeaking = false; _stopBargeInWatch(); ttsAudio = null; if (onDone) onDone(); };
+            ttsAudio.onerror = () => { isSpeaking = false; _stopBargeInWatch(); ttsAudio = null; if (onDone) onDone(); };
             ttsAudio.play();
         } else {
-            // Server-side `say` fallback or no API key — use browser TTS
             const u = new SpeechSynthesisUtterance(text);
             u.rate = 1.05;
             u.onend = () => { if (onDone) onDone(); };
@@ -1515,8 +1643,10 @@ function coachStop() {
     coachCurrentPrompt = null;
     coachPendingAnswer = "";
     coachAwaitingConfirm = false;
+    _ttsAborted = true;
     if (ttsAudio) { ttsAudio.pause(); ttsAudio = null; }
     isSpeaking = false;
+    _stopBargeInWatch();
     window.speechSynthesis.cancel();
     if (isRecording) stopRecording();
     setStatus("Coach stopped");
