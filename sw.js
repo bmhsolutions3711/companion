@@ -1,5 +1,5 @@
 // Atlas PWA shell — network-first SW. Backend API calls bypass cache.
-const CACHE_NAME = "atlas-shell-v32";
+const CACHE_NAME = "atlas-shell-v33";
 const SHELL = [
   "./",
   "./index.html",
@@ -79,33 +79,47 @@ self.addEventListener("notificationclick", (event) => {
   // approval only — no stored credentials involved.
   if (approval && (event.action === "approve" || event.action === "deny")) {
     const decision = event.action;
+    const note = (title, body) =>
+      self.registration.showNotification(title, {
+        body: body,
+        tag: event.notification.tag,
+        icon: "./static/companion-icon-192.png",
+        badge: "./static/companion-icon-192.png",
+      });
     event.waitUntil(
       fetch(approval.decide_url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ decision: decision, token: approval.token }),
       })
-        .then((r) => {
-          const ok = r.ok;
-          return self.registration.showNotification(
-            ok ? (decision === "approve" ? "Approved ✓" : "Denied ✗") : "Couldn't send decision",
-            {
-              body: ok
-                ? "The session has its answer."
-                : "Check Tailscale is up, then decide from the Atlas app.",
-              tag: event.notification.tag,
-              icon: "./static/companion-icon-192.png",
-              badge: "./static/companion-icon-192.png",
+        .then(async (r) => {
+          if (r.ok) {
+            return note(decision === "approve" ? "Approved ✓" : "Denied ✗",
+                        "The session has its answer.");
+          }
+          // 409 = the approval was already settled — on this or another device,
+          // or it expired. The body carries the real status; say so truthfully
+          // instead of blaming the network.
+          if (r.status === 409) {
+            let s = "";
+            try { s = (await r.json()).status || ""; } catch (e) { /* ignore */ }
+            if (s === "expired") {
+              return note("Too late — expired",
+                          "This approval lapsed; the session fell back to a terminal prompt.");
             }
-          );
+            return note("Already " + (s || "decided"),
+                        "This approval was already answered on another device.");
+          }
+          // 401 = token rejected (shouldn't happen from a real push); other
+          // non-OK = Atlas reachable but erroring.
+          return note("Couldn't send decision",
+                      "Atlas is reachable but rejected it — open the Atlas app to decide.");
         })
         .catch(() =>
-          self.registration.showNotification("Couldn't send decision", {
-            body: "No route to base. Check Tailscale is up, then decide from the Atlas app.",
-            tag: event.notification.tag,
-            icon: "./static/companion-icon-192.png",
-            badge: "./static/companion-icon-192.png",
-          })
+          // True network failure — this is the only case that is actually
+          // "check your connection".
+          note("Couldn't reach Atlas",
+               "No route to base — check Tailscale is up, then decide from the Atlas app.")
         )
     );
     return;
