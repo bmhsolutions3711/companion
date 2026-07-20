@@ -1,5 +1,5 @@
 // Atlas PWA shell — network-first SW. Backend API calls bypass cache.
-const CACHE_NAME = "atlas-shell-v31";
+const CACHE_NAME = "atlas-shell-v32";
 const SHELL = [
   "./",
   "./index.html",
@@ -58,15 +58,61 @@ self.addEventListener("push", (event) => {
     badge: data.badge || "./static/companion-icon-192.png",
     tag: data.tag || "atlas",
     requireInteraction: !!data.requireInteraction,
-    data: { url: data.url || "./" },
+    data: { url: data.url || "./", approval: data.approval || null },
   };
+  // Approval pushes carry Approve/Deny action buttons (on Android they sit
+  // under the notification's expand chevron).
+  if (data.kind === "approval" && Array.isArray(data.actions)) {
+    options.actions = data.actions;
+  }
   event.waitUntil(self.registration.showNotification(title, options));
 });
 
-// ── Notification tap: focus or open the Atlas PWA ────────────────────────
+// ── Notification tap: answer an approval, or focus/open the Atlas PWA ────
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
-  const url = (event.notification.data && event.notification.data.url) || "./";
+  const d = event.notification.data || {};
+  const approval = d.approval;
+
+  // Approve/Deny button tap → POST the decision straight from the SW.
+  // The payload carries the callback URL + a single-use token for this
+  // approval only — no stored credentials involved.
+  if (approval && (event.action === "approve" || event.action === "deny")) {
+    const decision = event.action;
+    event.waitUntil(
+      fetch(approval.decide_url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ decision: decision, token: approval.token }),
+      })
+        .then((r) => {
+          const ok = r.ok;
+          return self.registration.showNotification(
+            ok ? (decision === "approve" ? "Approved ✓" : "Denied ✗") : "Couldn't send decision",
+            {
+              body: ok
+                ? "The session has its answer."
+                : "Check Tailscale is up, then decide from the Atlas app.",
+              tag: event.notification.tag,
+              icon: "./static/companion-icon-192.png",
+              badge: "./static/companion-icon-192.png",
+            }
+          );
+        })
+        .catch(() =>
+          self.registration.showNotification("Couldn't send decision", {
+            body: "No route to base. Check Tailscale is up, then decide from the Atlas app.",
+            tag: event.notification.tag,
+            icon: "./static/companion-icon-192.png",
+            badge: "./static/companion-icon-192.png",
+          })
+        )
+    );
+    return;
+  }
+
+  // Plain tap → focus or open the app.
+  const url = d.url || "./";
   event.waitUntil(
     self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {
       for (const c of clients) {
